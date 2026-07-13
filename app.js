@@ -467,6 +467,15 @@
       </div>
       <div class="micro">Iron: aim ${plan.iron.mgPerDay} mg/day, ferritin ≥ ${plan.iron.ferritinTarget} ng/mL${plan.iron.female ? " (screen each season; take iron in the morning, away from the 3–6 h post-run window)." : "."}</div>`;
     main.appendChild(tc);
+
+    // food logging — targets vs. what's actually been eaten today
+    const foodCard = el("div", { class: "card wide" });
+    main.appendChild(foodCard);
+    window.FoodLog.mount(foodCard, {
+      profileId: stored.id,
+      date: todayKey(),
+      target: { calories: plan.calories, protein: plan.macros.protein, carbs: plan.macros.carbs, fat: plan.macros.fat },
+    });
   }
 
   function renderGlasses(container, storedUser, goal, card) {

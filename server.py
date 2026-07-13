@@ -53,6 +53,10 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS sessions ("
         "  token TEXT PRIMARY KEY, created_at INTEGER)"
     )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS food_logs ("
+        "  id TEXT PRIMARY KEY, profile_id TEXT, log_date TEXT, data TEXT)"
+    )
     db.commit()
     db.close()
 
@@ -143,6 +147,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/profiles":
             return self._guard() and self._list_profiles()
+        if path == "/api/food":
+            return self._guard() and self._list_food(urlparse(self.path))
         if path in ("/intervals/activities", "/intervals/wellness"):
             return self._guard() and self._proxy(urlparse(self.path))
         return super().do_GET()
@@ -153,18 +159,24 @@ class Handler(SimpleHTTPRequestHandler):
             return self._unlock()
         if path.startswith("/api/profiles/"):
             return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/food/"):
+            return self._guard() and self._save_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
 
     def do_PUT(self):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
             return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/food/"):
+            return self._guard() and self._save_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
 
     def do_DELETE(self):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
             return self._guard() and self._delete_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/food/"):
+            return self._guard() and self._delete_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
 
     # ----- profiles API -----
@@ -193,6 +205,42 @@ class Handler(SimpleHTTPRequestHandler):
     def _delete_profile(self, pid):
         db = db_conn()
         db.execute("DELETE FROM profiles WHERE id = ?", (pid,))
+        db.commit()
+        db.close()
+        self._json({"ok": True})
+
+    # ----- food logs API -----
+    def _list_food(self, parsed):
+        qs = parse_qs(parsed.query)
+        profile = qs.get("profile", [""])[0]
+        date = qs.get("date", [""])[0]
+        db = db_conn()
+        rows = db.execute(
+            "SELECT data FROM food_logs WHERE profile_id = ? AND log_date = ?",
+            (profile, date),
+        ).fetchall()
+        db.close()
+        self._json([json.loads(r[0]) for r in rows])
+
+    def _save_food(self, fid):
+        try:
+            entry = self._body()
+        except Exception:
+            return self._json({"error": "bad JSON"}, 400)
+        entry["id"] = fid
+        db = db_conn()
+        db.execute(
+            "INSERT INTO food_logs (id, profile_id, log_date, data) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+            (fid, entry.get("profileId", ""), entry.get("date", ""), json.dumps(entry)),
+        )
+        db.commit()
+        db.close()
+        self._json(entry)
+
+    def _delete_food(self, fid):
+        db = db_conn()
+        db.execute("DELETE FROM food_logs WHERE id = ?", (fid,))
         db.commit()
         db.close()
         self._json({"ok": True})
