@@ -4,6 +4,10 @@ services:
     container_name: fuellog
     ports:
       - "8137:8137"
+    environment:
+      # Shared access PIN for the app. Change this to something longer for
+      # better protection once the app is public via Tailscale Funnel.
+      APP_PIN: "666"
     volumes:
       - fuellog-data:/data
     restart: unless-stopped

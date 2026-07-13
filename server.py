@@ -5,36 +5,53 @@ server.py — the FuelLog app server. One process does three jobs:
   2. proxies intervals.icu (browsers can't call it directly — CORS + Cloudflare)
   3. exposes a small REST API over SQLite for profiles (shared across devices)
 
+A shared PIN gate protects the data API (needed once the app is public via
+Tailscale Funnel): unlocking with the PIN issues a long random session cookie,
+and every /api and /intervals call requires that cookie. Failed PIN attempts
+are throttled + locked out so the short PIN can't be brute-forced.
+
 Runs anywhere Python 3 does; in production it lives in a Docker container on the
-always-on Mac Mini, fronted by Tailscale Serve for HTTPS.
+always-on Mac Mini, fronted by Tailscale Serve/Funnel for HTTPS.
 
     python3 server.py            # http://localhost:8137
 """
 import base64
+import http.cookies
 import json
 import os
+import secrets
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("PORT", "8137"))
+PIN = os.environ.get("APP_PIN", "666")
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(HERE, "data", "fuellog.db"))
 os.chdir(HERE)
 
+COOKIE = "fl_session"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 180  # 180 days
+# Brute-force throttle (global, in-memory): after MAX_FAILS bad PINs, lock the
+# unlock endpoint for LOCKOUT seconds. Plus a per-attempt delay.
+MAX_FAILS = 10
+LOCKOUT = 900
+throttle = {"fails": 0, "lock_until": 0.0}
 
-# ---------- database ----------
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = sqlite3.connect(DB_PATH)
     db.execute(
         "CREATE TABLE IF NOT EXISTS profiles ("
-        "  id TEXT PRIMARY KEY,"
-        "  data TEXT NOT NULL,"
-        "  created_at INTEGER"
-        ")"
+        "  id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at INTEGER)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS sessions ("
+        "  token TEXT PRIMARY KEY, created_at INTEGER)"
     )
     db.commit()
     db.close()
@@ -45,12 +62,14 @@ def db_conn():
 
 
 class Handler(SimpleHTTPRequestHandler):
-    # ----- helpers -----
-    def _json(self, obj, code=200):
+    # ----- response helpers -----
+    def _json(self, obj, code=200, extra_headers=None):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for k, v in (extra_headers or []):
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -66,28 +85,86 @@ class Handler(SimpleHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         return json.loads(raw) if raw else {}
 
+    # ----- auth -----
+    def _session_token(self):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            jar = http.cookies.SimpleCookie(raw)
+        except http.cookies.CookieError:
+            return None
+        return jar[COOKIE].value if COOKIE in jar else None
+
+    def _authed(self):
+        token = self._session_token()
+        if not token:
+            return False
+        db = db_conn()
+        row = db.execute("SELECT 1 FROM sessions WHERE token = ?", (token,)).fetchone()
+        db.close()
+        return row is not None
+
+    def _guard(self):
+        """Return True if authed; otherwise send 401 and return False."""
+        if self._authed():
+            return True
+        self._json({"error": "locked"}, 401)
+        return False
+
+    def _unlock(self):
+        now = time.time()
+        if now < throttle["lock_until"]:
+            wait = int(throttle["lock_until"] - now)
+            return self._json({"error": "locked out", "retry_after": wait}, 429)
+        try:
+            pin = str(self._body().get("pin", ""))
+        except Exception:
+            pin = ""
+        if not secrets.compare_digest(pin, PIN):
+            throttle["fails"] += 1
+            if throttle["fails"] >= MAX_FAILS:
+                throttle["lock_until"] = now + LOCKOUT
+                throttle["fails"] = 0
+            time.sleep(1)  # slow brute force
+            return self._json({"error": "wrong PIN"}, 401)
+        # success
+        throttle["fails"] = 0
+        token = secrets.token_urlsafe(32)
+        db = db_conn()
+        db.execute("INSERT INTO sessions (token, created_at) VALUES (?, ?)", (token, int(now)))
+        db.commit()
+        db.close()
+        cookie = f"{COOKIE}={token}; Path=/; Max-Age={COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax"
+        self._json({"ok": True}, 200, extra_headers=[("Set-Cookie", cookie)])
+
     # ----- routing -----
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/profiles":
-            return self._list_profiles()
+            return self._guard() and self._list_profiles()
         if path in ("/intervals/activities", "/intervals/wellness"):
-            return self._proxy(urlparse(self.path))
+            return self._guard() and self._proxy(urlparse(self.path))
         return super().do_GET()
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/unlock":
+            return self._unlock()
+        if path.startswith("/api/profiles/"):
+            return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
+        return self._json({"error": "not found"}, 404)
 
     def do_PUT(self):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
-            return self._save_profile(path.rsplit("/", 1)[-1])
+            return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        return self.do_PUT()
 
     def do_DELETE(self):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
-            return self._delete_profile(path.rsplit("/", 1)[-1])
+            return self._guard() and self._delete_profile(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
 
     # ----- profiles API -----
@@ -155,7 +232,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"error": str(e)}, 502)
 
     def log_message(self, *args):
-        pass  # quiet, and never log the intervals key
+        pass  # quiet, and never log the intervals key or PIN
 
 
 if __name__ == "__main__":

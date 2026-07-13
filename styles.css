@@ -68,6 +68,11 @@ form label input, form label select, form label textarea { margin-top: 5px; colo
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 18px 0; }
 legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
+.unlock { max-width: 380px; margin: 60px auto; text-align: center; }
+.brand.big { font-size: 26px; justify-content: center; margin-bottom: 6px; }
+.pin-input { text-align: center; font-size: 32px; letter-spacing: 12px; padding: 14px; margin: 8px 0 4px; }
+.unlock .form-actions { justify-content: center; }
+.pin-msg { color: var(--danger); font-size: 13px; margin-top: 10px; }
 .ht-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 5px; }
 .race-row { display: grid; grid-template-columns: 2fr 1.3fr .8fr 1fr auto; gap: 8px; margin-bottom: 8px; align-items: center; }
 .race-row input, .race-row select { width: 100%; }

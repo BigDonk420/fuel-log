@@ -46,7 +46,7 @@
   const API = {
     async list() {
       const r = await fetch("/api/profiles");
-      if (!r.ok) throw new Error("load " + r.status);
+      if (!r.ok) { const e = new Error("load " + r.status); e.status = r.status; throw e; }
       return r.json();
     },
     async save(u) {
@@ -487,6 +487,36 @@
     }
   }
 
+  /* ---------- PIN gate ---------- */
+  function renderUnlock(msg) {
+    $("#app").innerHTML = `<div class="screen">
+      <div class="onboard card unlock">
+        <div class="brand big"><span class="dot"></span> Fuel<span class="brand-2">Log</span></div>
+        <p class="sub">Enter the access PIN to continue.</p>
+        <form id="pinForm">
+          <input name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"
+                 class="pin-input" placeholder="• • •" aria-label="access PIN"/>
+          <div class="form-actions"><button type="submit" class="btn-primary">Unlock</button></div>
+          ${msg ? `<div class="pin-msg">${msg}</div>` : ""}
+        </form>
+      </div></div>`;
+    const input = $("#pinForm").pin;
+    input.focus();
+    $("#pinForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const r = await fetch("/api/unlock", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: input.value.trim() }),
+      });
+      if (r.ok) return boot();
+      if (r.status === 429) {
+        const j = await r.json().catch(() => ({}));
+        return renderUnlock("Too many attempts — try again in " + Math.ceil((j.retry_after || 60) / 60) + " min.");
+      }
+      renderUnlock("Wrong PIN. Try again.");
+    });
+  }
+
   /* ---------- routing ---------- */
   function route() {
     if (!Store.users().length) return renderForm(null);
@@ -498,6 +528,7 @@
     try {
       await Store.reload();
     } catch (e) {
+      if (e.status === 401) return renderUnlock();
       $("#app").innerHTML = `<div class="screen"><div class="onboard card">
         <h1>Can't reach the server</h1>
         <p class="sub">The app couldn't load profiles from the API (${e.message}). Make sure the FuelLog server is running, then reload.</p>
