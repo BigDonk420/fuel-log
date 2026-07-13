@@ -1,0 +1,12 @@
+# local data / SQLite
+data/
+*.db
+*.sqlite
+
+# OS / editor
+.DS_Store
+__pycache__/
+*.pyc
+
+# local dev preview config
+.claude/

@@ -1,0 +1,12 @@
+services:
+  fuellog:
+    build: .
+    container_name: fuellog
+    ports:
+      - "8137:8137"
+    volumes:
+      - fuellog-data:/data
+    restart: unless-stopped
+
+volumes:
+  fuellog-data:

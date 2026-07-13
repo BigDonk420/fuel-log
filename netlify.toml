@@ -1,0 +1,13 @@
+# Netlify deploy config for FuelLog.
+# Serves the static app from the repo root and runs the intervals proxy as a
+# function. The rewrite makes /intervals/activities?... work in production
+# exactly like it does locally under server.py.
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/intervals/:kind"
+  to = "/.netlify/functions/intervals?kind=:kind"
+  status = 200
