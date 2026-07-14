@@ -8,7 +8,9 @@
 </head>
 <body>
   <div id="app"></div>
-  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- Quagga2: a decoder built specifically for 1D retail barcodes (UPC/EAN).
+       html5-qrcode is a QR library and could not read a UPC-E on a curved can. -->
+  <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
   <script src="model.js"></script>
   <script src="charts.js"></script>
   <script src="food.js"></script>

@@ -297,9 +297,19 @@ window.FoodLog = (function () {
     api.delLog(id).catch((e) => console.error("food delete failed", e));
   }
 
-  /* ---------- scanner ---------- */
+  /* ---------- scanner (Quagga2) ----------
+   * Readers are UPC / UPC-E / EAN-13 only. ean_8_reader is deliberately absent:
+   * a UPC-E symbol decodes as a checksum-valid but completely WRONG EAN-8,
+   * which is how a Diet Mt Dew can kept reading as 16901223.
+   *
+   * Barcodes on cans are curved, which distorts bar widths — the classic hard
+   * case for 1D decoding. Hence the photo fallback: a full-resolution, focused
+   * still is far more forgiving than a live video frame.
+   */
+  const READERS = ["upc_reader", "upc_e_reader", "ean_reader"];
+
   function openScanner() {
-    if (typeof Html5Qrcode === "undefined") {
+    if (typeof Quagga === "undefined") {
       alert("Scanner didn't load. Use search or type the barcode number instead.");
       return;
     }
@@ -308,60 +318,93 @@ window.FoodLog = (function () {
     overlay.innerHTML = `<div class="scan-box">
       <div class="scan-head"><span>Point at a barcode</span><button id="scanClose" class="btn-ghost">✕</button></div>
       <div id="reader"></div>
-      <div class="scan-msg" id="scanMsg">Hold steady…</div>
+      <div class="scan-msg" id="scanMsg">Hold steady — fill the frame with the barcode.</div>
+      <label class="btn-ghost photo-btn">📷 Trouble? Take a photo instead
+        <input type="file" accept="image/*" capture="environment" id="scanPhoto" hidden/>
+      </label>
     </div>`;
     document.body.appendChild(overlay);
 
-    // ONLY these three. EAN_8 is deliberately excluded: a UPC-E symbol decodes
-    // as a checksum-valid but completely wrong EAN-8, which is exactly how a
-    // Diet Mt Dew can read as "16901223". US retail doesn't use EAN-8 anyway.
-    const F = window.Html5QrcodeSupportedFormats;
-    const formats = F ? [F.UPC_A, F.UPC_E, F.EAN_13] : undefined;
-    const scanner = new Html5Qrcode("reader", formats ? { formatsToSupport: formats } : undefined);
-
-    let last = null, done = false, rejects = 0;
     const msg = overlay.querySelector("#scanMsg");
-    const close = async () => {
-      try { await scanner.stop(); } catch (e) { /* already stopped */ }
-      overlay.remove();
+    let last = null, done = false, rejects = 0, live = false;
+
+    const stopLive = () => {
+      if (!live) return;
+      live = false;
+      try { Quagga.offDetected(onDetected); Quagga.stop(); } catch (e) { /* not running */ }
     };
+    const close = () => { stopLive(); overlay.remove(); };
     overlay.querySelector("#scanClose").addEventListener("click", close);
 
-    scanner.start(
-      { facingMode: "environment" },
-      {
-        fps: 12,
-        // wide, barcode-shaped window (a square QR box makes 1D codes slow to lock)
-        qrbox: { width: 300, height: 120 },
-        // high resolution + continuous autofocus: 1D barcodes need the detail
-        videoConstraints: {
+    async function accept(code) {
+      done = true;
+      msg.textContent = "Looking up " + code + "…";
+      const food = await api.lookup(code);
+      close();
+      if (food) showPick(food);
+      else { root.querySelector("#fQuery").value = code; notFound(code); }
+    }
+
+    function onDetected(res) {
+      if (done) return;
+      const code = res && res.codeResult && res.codeResult.code;
+      if (!code) return;
+      if (!validBarcode(code)) {
+        rejects++;
+        msg.innerHTML = rejects < 6
+          ? "Misread (" + esc(code) + ") — hold steady…"
+          : "Curved cans are hard to read.<br/>Try the photo option below, or type the digits under the barcode.";
+        last = null;
+        return;
+      }
+      if (code !== last) { last = code; return; }  // require two consistent reads
+      stopLive();
+      accept(code);
+    }
+
+    Quagga.init({
+      inputStream: {
+        type: "LiveStream",
+        target: overlay.querySelector("#reader"),
+        constraints: {
           facingMode: "environment",
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          advanced: [{ focusMode: "continuous" }],
+          width: { min: 640, ideal: 1920 },
+          height: { min: 480, ideal: 1080 },
         },
+        area: { top: "25%", right: "5%", left: "5%", bottom: "25%" },
       },
-      async (text) => {
-        if (done) return;
-        if (!validBarcode(text)) {          // reject misreads outright
-          rejects++;
-          msg.innerHTML = rejects < 6
-            ? "Misread (" + text + ") — hold steady…"
-            : `Struggling to read this one.<br/>Close and type the digits printed under the barcode.`;
-          last = null;
-          return;
-        }
-        if (text !== last) { last = text; return; }   // same valid code twice
-        done = true;
-        msg.textContent = "Looking up " + text + "…";
-        const food = await api.lookup(text);
-        await close();
-        if (food) showPick(food);
-        else { root.querySelector("#fQuery").value = text; notFound(text); }
-      },
-      () => {}
-    ).catch((err) => {
-      msg.textContent = "Camera error: " + err;
+      locator: { patchSize: "medium", halfSample: true },
+      numOfWorkers: 0,          // workers are unreliable in mobile Safari
+      frequency: 10,
+      decoder: { readers: READERS },
+      locate: true,
+    }, (err) => {
+      if (err) { msg.textContent = "Camera error: " + err; return; }
+      live = true;
+      Quagga.onDetected(onDetected);
+      Quagga.start();
+    });
+
+    // photo fallback — full-resolution, autofocused still
+    overlay.querySelector("#scanPhoto").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      stopLive();
+      msg.textContent = "Reading photo…";
+      const url = URL.createObjectURL(file);
+      Quagga.decodeSingle({
+        decoder: { readers: READERS },
+        locate: true,
+        src: url,
+        inputStream: { size: 1920 },
+      }, (result) => {
+        URL.revokeObjectURL(url);
+        const code = result && result.codeResult && result.codeResult.code;
+        if (code && validBarcode(code)) return accept(code);
+        msg.innerHTML = code
+          ? "Photo read " + esc(code) + ", which isn't a valid code.<br/>Type the digits under the barcode instead."
+          : "Couldn't read that photo.<br/>Get closer, avoid glare, or type the digits under the barcode.";
+      });
     });
   }
 
