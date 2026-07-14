@@ -1,0 +1,9 @@
+# Keep secrets and local state out of the image. Compose passes env vars in at
+# runtime, so .env never needs to be baked into the build.
+.env
+data/
+*.db
+.git
+.gitignore
+__pycache__/
+.DS_Store

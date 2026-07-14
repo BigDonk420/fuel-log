@@ -1,3 +1,6 @@
+# secrets — never commit (this repo is public)
+.env
+
 # local data / SQLite
 data/
 *.db

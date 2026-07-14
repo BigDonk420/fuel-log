@@ -28,6 +28,23 @@ import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+def _load_dotenv():
+    """Local-dev convenience: read a gitignored .env if present. In Docker,
+    compose supplies these as real env vars, so we never override what's set."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv()
+
 PORT = int(os.environ.get("PORT", "8137"))
 PIN = os.environ.get("APP_PIN", "666")
 # USDA FoodData Central — far better US branded coverage than Open Food Facts.

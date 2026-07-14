@@ -8,6 +8,9 @@ services:
       # Shared access PIN for the app. Change this to something longer for
       # better protection once the app is public via Tailscale Funnel.
       APP_PIN: "666"
+      # Read from the gitignored .env file (see .env.example). Falls back to the
+      # heavily rate-limited DEMO_KEY if unset. Never hard-code the key here.
+      USDA_API_KEY: ${USDA_API_KEY:-DEMO_KEY}
     volumes:
       - fuellog-data:/data
     restart: unless-stopped
