@@ -20,6 +20,49 @@ window.FoodLog = (function () {
   let LOGS = [];
   let root = null;
 
+  /* ---------- barcode validation ----------
+   * Misreads are the enemy: a UPC-E symbol decoded as EAN-8 yields a code that
+   * is WRONG but still passes an EAN-8 checksum, so "read it twice" can't catch
+   * it. We therefore validate every scan as UPC-E / UPC-A / EAN-13 and reject
+   * anything whose check digit doesn't hold. (EAN-8 is not used on US retail
+   * products and is deliberately not accepted.)
+   */
+  function upcaCheckDigit(d11) {
+    let odd = 0, even = 0;
+    for (let i = 0; i < 11; i++) (i % 2 === 0 ? (odd += +d11[i]) : (even += +d11[i]));
+    return (10 - (odd * 3 + even) % 10) % 10;
+  }
+  function ean13CheckDigit(d12) {
+    let s = 0;
+    for (let i = 0; i < 12; i++) s += +d12[i] * (i % 2 === 0 ? 1 : 3);
+    return (10 - s % 10) % 10;
+  }
+  function expandUpce(d8) {
+    const n = d8[0], x = d8.slice(1, 7);
+    // Number system MUST be 0. UPC-E technically allows 1, but it is
+    // essentially unused on US retail goods — and "1" was the signature of
+    // every misread we saw (14776649, 16901223) while the real Diet Mt Dew
+    // code is 01216606. Rejecting 1 kills those without losing real products.
+    if (n !== "0") return null;
+    const last = x[5];
+    let body;
+    if ("012".includes(last)) body = n + x[0] + x[1] + last + "0000" + x[2] + x[3] + x[4];
+    else if (last === "3") body = n + x[0] + x[1] + x[2] + "00000" + x[3] + x[4];
+    else if (last === "4") body = n + x[0] + x[1] + x[2] + x[3] + "00000" + x[4];
+    else body = n + x[0] + x[1] + x[2] + x[3] + x[4] + "0000" + last;
+    return body + upcaCheckDigit(body);
+  }
+  function validBarcode(code) {
+    const d = String(code || "").replace(/\D/g, "");
+    if (d.length === 8) {                       // UPC-E: expand, then the UPC-A
+      const e = expandUpce(d);                  // check digit must equal ours
+      return !!e && e[11] === d[7];
+    }
+    if (d.length === 12) return upcaCheckDigit(d.slice(0, 11)) === +d[11];
+    if (d.length === 13) return ean13CheckDigit(d.slice(0, 12)) === +d[12];
+    return false;
+  }
+
   /* ---------- api ---------- */
   const api = {
     async logs() {
@@ -269,13 +312,15 @@ window.FoodLog = (function () {
     </div>`;
     document.body.appendChild(overlay);
 
-    // Lock to product-barcode symbologies. Scanning every format (QR included)
-    // caused misreads — a Diet Mt Dew can decoded as a nonexistent code.
+    // ONLY these three. EAN_8 is deliberately excluded: a UPC-E symbol decodes
+    // as a checksum-valid but completely wrong EAN-8, which is exactly how a
+    // Diet Mt Dew can read as "16901223". US retail doesn't use EAN-8 anyway.
     const F = window.Html5QrcodeSupportedFormats;
-    const formats = F ? [F.UPC_A, F.UPC_E, F.EAN_13, F.EAN_8] : undefined;
+    const formats = F ? [F.UPC_A, F.UPC_E, F.EAN_13] : undefined;
     const scanner = new Html5Qrcode("reader", formats ? { formatsToSupport: formats } : undefined);
 
     let last = null, done = false;
+    const msg = overlay.querySelector("#scanMsg");
     const close = async () => {
       try { await scanner.stop(); } catch (e) { /* already stopped */ }
       overlay.remove();
@@ -284,13 +329,28 @@ window.FoodLog = (function () {
 
     scanner.start(
       { facingMode: "environment" },
-      { fps: 10, qrbox: { width: 280, height: 160 } },
+      {
+        fps: 12,
+        // wide, barcode-shaped window (a square QR box makes 1D codes slow to lock)
+        qrbox: { width: 300, height: 120 },
+        // high resolution + continuous autofocus: 1D barcodes need the detail
+        videoConstraints: {
+          facingMode: "environment",
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }],
+        },
+      },
       async (text) => {
         if (done) return;
-        // require the SAME code twice in a row — one-shot reads are unreliable
-        if (text !== last) { last = text; return; }
+        if (!validBarcode(text)) {          // reject misreads outright
+          msg.textContent = "Misread (" + text + ") — hold steady…";
+          last = null;
+          return;
+        }
+        if (text !== last) { last = text; return; }   // same valid code twice
         done = true;
-        overlay.querySelector("#scanMsg").textContent = "Looking up " + text + "…";
+        msg.textContent = "Looking up " + text + "…";
         const food = await api.lookup(text);
         await close();
         if (food) showPick(food);
@@ -298,7 +358,7 @@ window.FoodLog = (function () {
       },
       () => {}
     ).catch((err) => {
-      overlay.querySelector("#scanMsg").textContent = "Camera error: " + err;
+      msg.textContent = "Camera error: " + err;
     });
   }
 
