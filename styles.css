@@ -155,8 +155,16 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .fitem.empty { color: var(--muted); justify-content: center; border: none; }
 .fi-name { flex: 1; } .fi-name small { color: var(--muted); margin-left: 6px; }
 .fi-macros { color: var(--muted); font-size: 12px; }
-.fi-del { background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px 8px; }
+.fi-del, .fi-edit { background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px 6px; }
 .fi-del:hover { color: var(--danger); }
+.fi-edit:hover { color: var(--accent); }
+.fpick-head { display: flex; align-items: center; gap: 8px; }
+.fpick-head b { flex: 1; }
+.fsrc { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.fsrc.local { color: var(--accent); border-color: var(--accent); }
+.fedit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+.fchk { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.fchk input { width: auto; }
 .fadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .fadd #fQuery { flex: 1; min-width: 180px; }
 .fadd .btn-primary i { font-style: normal; margin-right: 4px; }

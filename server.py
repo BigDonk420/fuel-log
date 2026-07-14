@@ -23,12 +23,18 @@ import secrets
 import sqlite3
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("PORT", "8137"))
 PIN = os.environ.get("APP_PIN", "666")
+# USDA FoodData Central — far better US branded coverage than Open Food Facts.
+# DEMO_KEY works but is heavily rate-limited; get a free key at
+# https://fdc.nal.usda.gov/api-key-signup.html and set USDA_API_KEY.
+USDA_API_KEY = os.environ.get("USDA_API_KEY", "DEMO_KEY")
+UA = "Mozilla/5.0 (compatible; FuelLog/1.0)"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(HERE, "data", "fuellog.db"))
 os.chdir(HERE)
@@ -57,12 +63,213 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS food_logs ("
         "  id TEXT PRIMARY KEY, profile_id TEXT, log_date TEXT, data TEXT)"
     )
+    # Local food database: user corrections + custom foods. Checked FIRST on
+    # every lookup, so fixing a bad entry once fixes it forever.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS foods ("
+        "  barcode TEXT PRIMARY KEY, data TEXT, updated_at INTEGER)"
+    )
     db.commit()
     db.close()
 
 
 def db_conn():
     return sqlite3.connect(DB_PATH)
+
+
+# ---------- barcodes ----------
+def _digits(s):
+    return "".join(c for c in str(s or "") if c.isdigit())
+
+
+def upc_check_digit(d11):
+    odd = sum(int(d11[i]) for i in range(0, 11, 2))
+    even = sum(int(d11[i]) for i in range(1, 11, 2))
+    return (10 - (odd * 3 + even) % 10) % 10
+
+
+def expand_upce(code):
+    """UPC-E (compressed, used on cans/small packages) -> UPC-A (12 digits).
+    Food databases are keyed on UPC-A/EAN-13, so this expansion is required or
+    every canned-drink scan misses."""
+    d = _digits(code)
+    if len(d) == 6:
+        n, x = "0", d
+    elif len(d) == 7:
+        n, x = d[0], d[1:7]
+    elif len(d) == 8:
+        n, x = d[0], d[1:7]
+    else:
+        return None
+    if n not in ("0", "1"):
+        return None
+    last = x[5]
+    if last in "012":
+        body = n + x[0] + x[1] + last + "0000" + x[2] + x[3] + x[4]
+    elif last == "3":
+        body = n + x[0] + x[1] + x[2] + "00000" + x[3] + x[4]
+    elif last == "4":
+        body = n + x[0] + x[1] + x[2] + x[3] + "00000" + x[4]
+    else:
+        body = n + x[0] + x[1] + x[2] + x[3] + x[4] + "0000" + last
+    return body + str(upc_check_digit(body))
+
+
+def code_candidates(code):
+    """Every plausible form of a scanned code, in priority order.
+
+    Order matters: a 6-8 digit code is UPC-E, and its EXPANSION is the real
+    GTIN — so try that first. Querying the raw short code instead tends to
+    fuzzy-match junk community entries (a 6-digit query once returned "Mtn dee"
+    instead of the real Diet Mtn Dew at 012000001666)."""
+    d = _digits(code)
+    if not d:
+        return []
+    e = expand_upce(d)
+    ordered = []
+    if len(d) < 12 and e:
+        ordered.append(e)
+    ordered.append(d)
+    if e:
+        ordered.append(e)
+    for c in list(ordered):
+        if len(c) == 12:
+            ordered.append("0" + c)          # UPC-A -> EAN-13
+        elif len(c) == 13 and c.startswith("0"):
+            ordered.append(c[1:])            # EAN-13 -> UPC-A
+    seen, uniq = set(), []
+    for c in ordered:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
+# ---------- external food sources ----------
+def _http_json(url, timeout=15):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+def _servings(grams, label):
+    out = []
+    if grams and label:
+        out.append({"label": label, "grams": round(grams)})
+    out.append({"label": "100 g", "grams": 100})
+    return out
+
+
+def normalize_usda(f):
+    nut = {}
+    for n in f.get("foodNutrients", []) or []:
+        nut[str(n.get("nutrientNumber") or "")] = n.get("value") or 0
+    size = f.get("servingSize") or 0
+    unit = (f.get("servingSizeUnit") or "").lower()
+    label = f.get("householdServingFullText") or (f"{size:g} {unit}" if size else "")
+    grams = size if unit in ("g", "ml", "grm") else 0
+    return {
+        "barcode": _digits(f.get("gtinUpc")),
+        "name": (f.get("description") or "").title(),
+        "brand": f.get("brandOwner") or f.get("brandName") or "",
+        "per100": {
+            "kcal": round(nut.get("208", 0)),
+            "protein": round(nut.get("203", 0)),
+            "carbs": round(nut.get("205", 0)),
+            "fat": round(nut.get("204", 0)),
+        },
+        "servings": _servings(grams, label),
+        "source": "usda",
+    }
+
+
+def normalize_off(p):
+    n = p.get("nutriments") or {}
+    kcal = n.get("energy-kcal_100g")
+    if kcal is None and n.get("energy_100g") is not None:
+        kcal = n["energy_100g"] / 4.184
+    import re as _re
+    m = _re.search(r"([\d.]+)\s*(g|ml)", p.get("serving_size") or "", _re.I)
+    grams = float(m.group(1)) if m else 0
+    return {
+        "barcode": _digits(p.get("code")),
+        "name": p.get("product_name") or "",
+        "brand": p.get("brands") or "",
+        "per100": {
+            "kcal": round(kcal or 0),
+            "protein": round(n.get("proteins_100g") or 0),
+            "carbs": round(n.get("carbohydrates_100g") or 0),
+            "fat": round(n.get("fat_100g") or 0),
+        },
+        "servings": _servings(grams, p.get("serving_size") or ""),
+        "source": "off",
+    }
+
+
+def usda_by_barcode(code):
+    try:
+        j = _http_json(
+            f"https://api.nal.usda.gov/fdc/v1/foods/search?query={code}"
+            f"&dataType=Branded&pageSize=5&api_key={USDA_API_KEY}"
+        )
+    except Exception:
+        return None
+    for f in j.get("foods", []) or []:
+        if _digits(f.get("gtinUpc")).lstrip("0") == code.lstrip("0"):
+            return normalize_usda(f)
+    return None
+
+
+def off_by_barcode(code):
+    try:
+        j = _http_json(
+            f"https://world.openfoodfacts.org/api/v2/product/{code}.json"
+            "?fields=code,product_name,brands,nutriments,serving_size"
+        )
+    except Exception:
+        return None
+    if j.get("status") == 1 and (j.get("product") or {}).get("product_name"):
+        return normalize_off(j["product"])
+    return None
+
+
+def lookup_chain(code, local_get):
+    """local override -> USDA -> Open Food Facts, across every code form."""
+    for c in code_candidates(code):
+        hit = local_get(c)
+        if hit:
+            hit["source"] = "local"
+            return hit
+    for c in code_candidates(code):
+        hit = usda_by_barcode(c)
+        if hit:
+            return hit
+    for c in code_candidates(code):
+        hit = off_by_barcode(c)
+        if hit:
+            return hit
+    return None
+
+
+def search_sources(q):
+    out = []
+    try:
+        j = _http_json(
+            f"https://api.nal.usda.gov/fdc/v1/foods/search?query={urllib.parse.quote(q)}"
+            f"&dataType=Branded,Foundation&pageSize=10&api_key={USDA_API_KEY}"
+        )
+        out += [normalize_usda(f) for f in (j.get("foods") or [])]
+    except Exception:
+        pass
+    try:
+        j = _http_json(
+            f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={urllib.parse.quote(q)}"
+            "&json=1&page_size=10&fields=code,product_name,brands,nutriments,serving_size"
+        )
+        out += [normalize_off(p) for p in (j.get("products") or []) if p.get("product_name")]
+    except Exception:
+        pass
+    return [f for f in out if f["name"] and f["per100"]["kcal"]]
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -88,6 +295,14 @@ class Handler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
         return json.loads(raw) if raw else {}
+
+    def end_headers(self):
+        # Never let browsers cache the app shell / JS. Without this, a redeploy
+        # leaves users silently running stale client code against a new server.
+        p = self.path.split("?")[0]
+        if not p.startswith("/api") and not p.startswith("/intervals"):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
 
     # ----- auth -----
     def _session_token(self):
@@ -149,6 +364,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self._guard() and self._list_profiles()
         if path == "/api/food":
             return self._guard() and self._list_food(urlparse(self.path))
+        if path == "/api/foods":
+            return self._guard() and self._list_food_defs()
+        if path == "/api/lookup":
+            return self._guard() and self._lookup(urlparse(self.path))
+        if path == "/api/search":
+            return self._guard() and self._search(urlparse(self.path))
         if path in ("/intervals/activities", "/intervals/wellness"):
             return self._guard() and self._proxy(urlparse(self.path))
         return super().do_GET()
@@ -159,6 +380,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._unlock()
         if path.startswith("/api/profiles/"):
             return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/foods/"):
+            return self._guard() and self._save_food_def(path.rsplit("/", 1)[-1])
         if path.startswith("/api/food/"):
             return self._guard() and self._save_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
@@ -167,6 +390,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
             return self._guard() and self._save_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/foods/"):
+            return self._guard() and self._save_food_def(path.rsplit("/", 1)[-1])
         if path.startswith("/api/food/"):
             return self._guard() and self._save_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
@@ -175,6 +400,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path.startswith("/api/profiles/"):
             return self._guard() and self._delete_profile(path.rsplit("/", 1)[-1])
+        if path.startswith("/api/foods/"):
+            return self._guard() and self._delete_food_def(path.rsplit("/", 1)[-1])
         if path.startswith("/api/food/"):
             return self._guard() and self._delete_food(path.rsplit("/", 1)[-1])
         return self._json({"error": "not found"}, 404)
@@ -244,6 +471,58 @@ class Handler(SimpleHTTPRequestHandler):
         db.commit()
         db.close()
         self._json({"ok": True})
+
+    # ----- food database (corrections + custom foods) -----
+    def _local_food(self, barcode):
+        db = db_conn()
+        row = db.execute("SELECT data FROM foods WHERE barcode = ?", (barcode,)).fetchone()
+        db.close()
+        return json.loads(row[0]) if row else None
+
+    def _list_food_defs(self):
+        db = db_conn()
+        rows = db.execute("SELECT data FROM foods ORDER BY updated_at DESC").fetchall()
+        db.close()
+        self._json([json.loads(r[0]) for r in rows])
+
+    def _save_food_def(self, barcode):
+        try:
+            food = self._body()
+        except Exception:
+            return self._json({"error": "bad JSON"}, 400)
+        food["barcode"] = barcode
+        food["source"] = "local"
+        db = db_conn()
+        db.execute(
+            "INSERT INTO foods (barcode, data, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(barcode) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+            (barcode, json.dumps(food), int(time.time())),
+        )
+        db.commit()
+        db.close()
+        self._json(food)
+
+    def _delete_food_def(self, barcode):
+        db = db_conn()
+        db.execute("DELETE FROM foods WHERE barcode = ?", (barcode,))
+        db.commit()
+        db.close()
+        self._json({"ok": True})
+
+    def _lookup(self, parsed):
+        code = parse_qs(parsed.query).get("code", [""])[0]
+        if not code:
+            return self._json({"error": "missing code"}, 400)
+        food = lookup_chain(code, self._local_food)
+        if not food:
+            return self._json({"error": "not found", "tried": code_candidates(code)}, 404)
+        self._json(food)
+
+    def _search(self, parsed):
+        q = parse_qs(parsed.query).get("q", [""])[0]
+        if not q:
+            return self._json([])
+        self._json(search_sources(q))
 
     # ----- intervals.icu proxy -----
     def _proxy(self, parsed):

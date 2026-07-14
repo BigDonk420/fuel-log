@@ -1,67 +1,47 @@
 /*
- * food.js — food logging: Open Food Facts lookup/search, a barcode camera
- * scanner, and the "today's food vs. targets" panel. Persists to /api/food.
+ * food.js — food logging.
  *
- * Open Food Facts allows direct browser calls (CORS), so lookups need no proxy.
- * The camera scanner uses html5-qrcode (loaded in index.html), which decodes
- * EAN/UPC barcodes on iOS Safari and Android alike.
+ * Lookups go through the SERVER (/api/lookup, /api/search), which runs the
+ * chain: your local corrections -> USDA FoodData Central -> Open Food Facts.
+ * That means once you fix a bad entry, every future scan of that barcode is
+ * corrected — for you and everyone on the app.
+ *
+ * The scanner is locked to UPC/EAN formats and requires two consistent reads
+ * before accepting a code (unconstrained scanning produced misreads).
  */
 window.FoodLog = (function () {
   "use strict";
 
-  const OFF = "https://world.openfoodfacts.org";
   const uid = () => "f" + Math.random().toString(36).slice(2, 9);
   const esc = (s) => String(s == null ? "" : s).replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
+  const num = (v) => Math.max(0, parseFloat(v) || 0);
 
-  let CTX = null;      // { profileId, date, target: {calories, protein, carbs, fat} }
+  let CTX = null;   // { profileId, date, target }
   let LOGS = [];
   let root = null;
 
-  /* ---------- persistence ---------- */
-  async function apiList() {
-    const r = await fetch(`/api/food?profile=${encodeURIComponent(CTX.profileId)}&date=${CTX.date}`);
-    return r.ok ? r.json() : [];
-  }
-  async function apiSave(entry) {
-    await fetch("/api/food/" + entry.id, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry),
-    });
-  }
-  async function apiDelete(id) {
-    await fetch("/api/food/" + id, { method: "DELETE" });
-  }
+  /* ---------- api ---------- */
+  const api = {
+    async logs() {
+      const r = await fetch(`/api/food?profile=${encodeURIComponent(CTX.profileId)}&date=${CTX.date}`);
+      return r.ok ? r.json() : [];
+    },
+    saveLog: (e) => fetch("/api/food/" + e.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(e) }),
+    delLog: (id) => fetch("/api/food/" + id, { method: "DELETE" }),
+    async lookup(code) {
+      const r = await fetch("/api/lookup?code=" + encodeURIComponent(code));
+      return r.ok ? r.json() : null;
+    },
+    async search(q) {
+      const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+      return r.ok ? r.json() : [];
+    },
+    saveFood: (f) => fetch("/api/foods/" + encodeURIComponent(f.barcode), {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f),
+    }),
+  };
 
-  /* ---------- Open Food Facts ---------- */
-  async function lookupBarcode(code) {
-    const r = await fetch(`${OFF}/api/v2/product/${encodeURIComponent(code)}.json?fields=code,product_name,brands,nutriments,serving_size`);
-    if (!r.ok) return null;
-    const j = await r.json();
-    return j.status === 1 ? j.product : null;
-  }
-  async function search(q) {
-    const url = `${OFF}/cgi/search.pl?search_terms=${encodeURIComponent(q)}&json=1&page_size=15&fields=code,product_name,brands,nutriments,serving_size`;
-    const r = await fetch(url);
-    if (!r.ok) return [];
-    const j = await r.json();
-    return (j.products || []).filter((p) => p.product_name);
-  }
-  function per100(product) {
-    const n = product.nutriments || {};
-    const kcal = n["energy-kcal_100g"] != null ? n["energy-kcal_100g"]
-      : n["energy_100g"] != null ? n["energy_100g"] / 4.184 : 0;
-    return {
-      kcal: Math.round(kcal),
-      protein: Math.round(n["proteins_100g"] || 0),
-      carbs: Math.round(n["carbohydrates_100g"] || 0),
-      fat: Math.round(n["fat_100g"] || 0),
-    };
-  }
-  function servingGrams(product) {
-    const m = /([\d.]+)\s*g/i.exec(product.serving_size || "");
-    return m ? Math.round(parseFloat(m[1])) : 100;
-  }
-
-  /* ---------- totals + render ---------- */
+  /* ---------- totals + main render ---------- */
   function totals() {
     return LOGS.reduce((t, e) => {
       t.kcal += e.kcal || 0; t.protein += e.protein || 0; t.carbs += e.carbs || 0; t.fat += e.fat || 0;
@@ -76,12 +56,12 @@ window.FoodLog = (function () {
     </div>`;
   }
   function render() {
-    const t = totals();
-    const tg = CTX.target;
+    const t = totals(), tg = CTX.target;
     const items = LOGS.length
       ? LOGS.map((e) => `<li class="fitem">
           <span class="fi-name">${esc(e.name)}<small>${e.grams} g</small></span>
           <span class="fi-macros">${e.kcal} kcal · ${e.protein}p ${e.carbs}c ${e.fat}f</span>
+          <button class="fi-edit" data-id="${e.id}" aria-label="edit">✎</button>
           <button class="fi-del" data-id="${e.id}" aria-label="remove">✕</button>
         </li>`).join("")
       : `<li class="fitem empty">No food logged yet today.</li>`;
@@ -101,47 +81,55 @@ window.FoodLog = (function () {
       </div>
       <div id="fResults"></div>`;
 
-    root.querySelectorAll(".fi-del").forEach((b) =>
-      b.addEventListener("click", () => removeItem(b.dataset.id)));
+    root.querySelectorAll(".fi-del").forEach((b) => b.addEventListener("click", () => removeItem(b.dataset.id)));
+    root.querySelectorAll(".fi-edit").forEach((b) => b.addEventListener("click", () => editLoggedItem(b.dataset.id)));
     root.querySelector("#fScan").addEventListener("click", openScanner);
     root.querySelector("#fLookup").addEventListener("click", runQuery);
     root.querySelector("#fQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") runQuery(); });
   }
+  const results = () => root.querySelector("#fResults");
 
+  /* ---------- lookup / search ---------- */
   async function runQuery() {
     const q = root.querySelector("#fQuery").value.trim();
     if (!q) return;
-    const res = root.querySelector("#fResults");
-    res.innerHTML = `<p class="explain">Searching…</p>`;
+    results().innerHTML = `<p class="explain">Searching…</p>`;
     if (/^\d{6,14}$/.test(q)) {
-      const p = await lookupBarcode(q);
-      return showResults(p ? [p] : [], "No product found for that barcode.");
+      const f = await api.lookup(q);
+      if (f) return showPick(f);
+      return notFound(q);
     }
-    showResults(await search(q), "No matches found.");
-  }
-
-  function showResults(products, emptyMsg) {
-    const res = root.querySelector("#fResults");
-    if (!products.length) { res.innerHTML = `<p class="explain">${emptyMsg}</p>`; return; }
-    res.innerHTML = products.map((p, i) => {
-      const m = per100(p);
-      return `<div class="fresult" data-i="${i}">
-        <div class="fr-info"><b>${esc(p.product_name)}</b><small>${esc(p.brands || "")} · ${m.kcal} kcal/100g</small></div>
+    const list = await api.search(q);
+    if (!list.length) return notFound(null);
+    results().innerHTML = list.map((f, i) => `<div class="fresult">
+        <div class="fr-info"><b>${esc(f.name)}</b><small>${esc(f.brand)} · ${f.per100.kcal} kcal/100g · ${f.source}</small></div>
         <button class="btn-ghost fr-pick" data-i="${i}">Add</button>
-      </div>`;
-    }).join("");
-    res.querySelectorAll(".fr-pick").forEach((b) =>
-      b.addEventListener("click", () => pickProduct(products[+b.dataset.i])));
+      </div>`).join("");
+    results().querySelectorAll(".fr-pick").forEach((b) =>
+      b.addEventListener("click", () => showPick(list[+b.dataset.i])));
   }
 
-  function pickProduct(product) {
-    const res = root.querySelector("#fResults");
-    const g = servingGrams(product);
-    const m = per100(product);
-    res.innerHTML = `<div class="fpick">
-      <b>${esc(product.product_name)}</b>
+  function notFound(barcode) {
+    results().innerHTML = `<div class="fpick">
+      <p class="explain">No product found${barcode ? " for barcode " + esc(barcode) : ""}.</p>
+      <div class="form-actions"><button class="btn-primary" id="fManual">Create it manually</button></div>
+    </div>`;
+    results().querySelector("#fManual").addEventListener("click", () =>
+      showEditor({ barcode: barcode || "custom-" + uid(), name: "", brand: "", per100: { kcal: 0, protein: 0, carbs: 0, fat: 0 }, servings: [{ label: "100 g", grams: 100 }] }));
+  }
+
+  /* ---------- the add panel ---------- */
+  function showPick(food) {
+    const def = (food.servings && food.servings[0]) || { grams: 100 };
+    const m = food.per100;
+    const badge = food.source === "local" ? `<span class="fsrc local">your correction</span>`
+      : `<span class="fsrc">${esc(food.source)}</span>`;
+    results().innerHTML = `<div class="fpick">
+      <div class="fpick-head"><b>${esc(food.name)}</b> ${badge}
+        <button class="btn-ghost" id="fEdit">✎ Edit</button></div>
+      <small>${esc(food.brand)} · ${m.kcal} kcal/100g</small>
       <div class="fpick-row">
-        <label>Amount (g)<input id="fGrams" type="number" value="${g}" min="1"/></label>
+        <label>Amount (g)<input id="fGrams" type="number" min="1" value="${def.grams}"/></label>
         <div class="fpick-macros" id="fPickMacros"></div>
       </div>
       <div class="form-actions">
@@ -149,42 +137,127 @@ window.FoodLog = (function () {
         <button class="btn-primary" id="fConfirm">Add to today</button>
       </div>
     </div>`;
-    const gramsInput = res.querySelector("#fGrams");
-    const macrosEl = res.querySelector("#fPickMacros");
+    const gi = results().querySelector("#fGrams");
     const paint = () => {
-      const grams = parseFloat(gramsInput.value) || 0;
-      const s = grams / 100;
-      macrosEl.textContent = `${Math.round(m.kcal * s)} kcal · ${Math.round(m.protein * s)}p ${Math.round(m.carbs * s)}c ${Math.round(m.fat * s)}f`;
+      const s = num(gi.value) / 100;
+      results().querySelector("#fPickMacros").textContent =
+        `${Math.round(m.kcal * s)} kcal · ${Math.round(m.protein * s)}p ${Math.round(m.carbs * s)}c ${Math.round(m.fat * s)}f`;
     };
-    gramsInput.addEventListener("input", paint); paint();
-    res.querySelector("#fCancel").addEventListener("click", () => { res.innerHTML = ""; });
-    res.querySelector("#fConfirm").addEventListener("click", () => {
-      const grams = parseFloat(gramsInput.value) || 0;
-      const s = grams / 100;
+    gi.addEventListener("input", paint); paint();
+    results().querySelector("#fEdit").addEventListener("click", () => showEditor(food));
+    results().querySelector("#fCancel").addEventListener("click", () => { results().innerHTML = ""; });
+    results().querySelector("#fConfirm").addEventListener("click", () => {
+      const grams = num(gi.value), s = grams / 100;
       addEntry({
         id: uid(), profileId: CTX.profileId, date: CTX.date, time: new Date().toISOString(),
-        name: product.product_name, barcode: product.code || "", grams: Math.round(grams),
+        name: food.name, barcode: food.barcode || "", grams: Math.round(grams),
         kcal: Math.round(m.kcal * s), protein: Math.round(m.protein * s),
         carbs: Math.round(m.carbs * s), fat: Math.round(m.fat * s),
       });
+      results().innerHTML = "";
+    });
+  }
+
+  /* ---------- editor: fix a food, permanently ---------- */
+  function showEditor(food) {
+    const m = food.per100 || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+    results().innerHTML = `<div class="fpick">
+      <b>Edit food — saved corrections apply to all future scans</b>
+      <div class="fedit-grid">
+        <label>Name<input id="eName" value="${esc(food.name)}"/></label>
+        <label>Brand<input id="eBrand" value="${esc(food.brand || "")}"/></label>
+        <label>Calories /100g<input id="eKcal" type="number" min="0" value="${m.kcal}"/></label>
+        <label>Protein /100g<input id="eP" type="number" min="0" value="${m.protein}"/></label>
+        <label>Carbs /100g<input id="eC" type="number" min="0" value="${m.carbs}"/></label>
+        <label>Fat /100g<input id="eF" type="number" min="0" value="${m.fat}"/></label>
+      </div>
+      <div class="form-actions">
+        <button class="btn-ghost" id="eCancel">Cancel</button>
+        <button class="btn-primary" id="eSave">Save correction</button>
+      </div>
+    </div>`;
+    results().querySelector("#eCancel").addEventListener("click", () => showPick(food));
+    results().querySelector("#eSave").addEventListener("click", async () => {
+      const fixed = {
+        barcode: food.barcode,
+        name: results().querySelector("#eName").value.trim() || food.name,
+        brand: results().querySelector("#eBrand").value.trim(),
+        per100: {
+          kcal: num(results().querySelector("#eKcal").value),
+          protein: num(results().querySelector("#eP").value),
+          carbs: num(results().querySelector("#eC").value),
+          fat: num(results().querySelector("#eF").value),
+        },
+        servings: food.servings || [{ label: "100 g", grams: 100 }],
+        source: "local",
+      };
+      await api.saveFood(fixed);
+      showPick(fixed);
+    });
+  }
+
+  /* ---------- edit an already-logged item ---------- */
+  function editLoggedItem(id) {
+    const e = LOGS.find((x) => x.id === id);
+    if (!e) return;
+    results().innerHTML = `<div class="fpick">
+      <b>Edit logged item</b>
+      <div class="fedit-grid">
+        <label>Name<input id="lName" value="${esc(e.name)}"/></label>
+        <label>Amount (g)<input id="lG" type="number" min="0" value="${e.grams}"/></label>
+        <label>Calories<input id="lKcal" type="number" min="0" value="${e.kcal}"/></label>
+        <label>Protein<input id="lP" type="number" min="0" value="${e.protein}"/></label>
+        <label>Carbs<input id="lC" type="number" min="0" value="${e.carbs}"/></label>
+        <label>Fat<input id="lF" type="number" min="0" value="${e.fat}"/></label>
+      </div>
+      ${e.barcode ? `<label class="fchk"><input type="checkbox" id="lFix" checked/> Also save as a permanent correction for this barcode</label>` : ""}
+      <div class="form-actions">
+        <button class="btn-ghost" id="lCancel">Cancel</button>
+        <button class="btn-primary" id="lSave">Save</button>
+      </div>
+    </div>`;
+    results().querySelector("#lCancel").addEventListener("click", () => { results().innerHTML = ""; });
+    results().querySelector("#lSave").addEventListener("click", async () => {
+      const q = (sel) => results().querySelector(sel);
+      e.name = q("#lName").value.trim() || e.name;
+      e.grams = Math.round(num(q("#lG").value));
+      e.kcal = Math.round(num(q("#lKcal").value));
+      e.protein = Math.round(num(q("#lP").value));
+      e.carbs = Math.round(num(q("#lC").value));
+      e.fat = Math.round(num(q("#lF").value));
+      api.saveLog(e).catch((err) => console.error(err));
+      // propagate back to the food database so future scans are right
+      const fix = q("#lFix");
+      if (fix && fix.checked && e.barcode && e.grams > 0) {
+        const s = 100 / e.grams;
+        await api.saveFood({
+          barcode: e.barcode, name: e.name, brand: "",
+          per100: {
+            kcal: Math.round(e.kcal * s), protein: Math.round(e.protein * s),
+            carbs: Math.round(e.carbs * s), fat: Math.round(e.fat * s),
+          },
+          servings: [{ label: `${e.grams} g`, grams: e.grams }, { label: "100 g", grams: 100 }],
+          source: "local",
+        });
+      }
+      results().innerHTML = "";
+      render();
     });
   }
 
   async function addEntry(entry) {
-    LOGS.push(entry);
-    render();
-    apiSave(entry).catch((e) => console.error("food save failed", e));
+    LOGS.push(entry); render();
+    api.saveLog(entry).catch((e) => console.error("food save failed", e));
   }
   async function removeItem(id) {
-    LOGS = LOGS.filter((e) => e.id !== id);
-    render();
-    apiDelete(id).catch((e) => console.error("food delete failed", e));
+    LOGS = LOGS.filter((e) => e.id !== id); render();
+    api.delLog(id).catch((e) => console.error("food delete failed", e));
   }
 
-  /* ---------- barcode scanner (html5-qrcode) ---------- */
+  /* ---------- scanner ---------- */
   function openScanner() {
     if (typeof Html5Qrcode === "undefined") {
-      alert("Scanner library didn't load. Use search or type the barcode number instead.");
+      alert("Scanner didn't load. Use search or type the barcode number instead.");
       return;
     }
     const overlay = document.createElement("div");
@@ -192,24 +265,36 @@ window.FoodLog = (function () {
     overlay.innerHTML = `<div class="scan-box">
       <div class="scan-head"><span>Point at a barcode</span><button id="scanClose" class="btn-ghost">✕</button></div>
       <div id="reader"></div>
-      <div class="scan-msg" id="scanMsg"></div>
+      <div class="scan-msg" id="scanMsg">Hold steady…</div>
     </div>`;
     document.body.appendChild(overlay);
-    const scanner = new Html5Qrcode("reader");
+
+    // Lock to product-barcode symbologies. Scanning every format (QR included)
+    // caused misreads — a Diet Mt Dew can decoded as a nonexistent code.
+    const F = window.Html5QrcodeSupportedFormats;
+    const formats = F ? [F.UPC_A, F.UPC_E, F.EAN_13, F.EAN_8] : undefined;
+    const scanner = new Html5Qrcode("reader", formats ? { formatsToSupport: formats } : undefined);
+
+    let last = null, done = false;
     const close = async () => {
       try { await scanner.stop(); } catch (e) { /* already stopped */ }
       overlay.remove();
     };
     overlay.querySelector("#scanClose").addEventListener("click", close);
+
     scanner.start(
       { facingMode: "environment" },
-      { fps: 10, qrbox: { width: 260, height: 160 } },
+      { fps: 10, qrbox: { width: 280, height: 160 } },
       async (text) => {
+        if (done) return;
+        // require the SAME code twice in a row — one-shot reads are unreliable
+        if (text !== last) { last = text; return; }
+        done = true;
         overlay.querySelector("#scanMsg").textContent = "Looking up " + text + "…";
-        const p = await lookupBarcode(text);
+        const food = await api.lookup(text);
         await close();
-        if (p) pickProduct(p);
-        else { root.querySelector("#fQuery").value = text; showResults([], "No product found — try search instead."); }
+        if (food) showPick(food);
+        else { root.querySelector("#fQuery").value = text; notFound(text); }
       },
       () => {}
     ).catch((err) => {
@@ -217,10 +302,9 @@ window.FoodLog = (function () {
     });
   }
 
-  /* ---------- mount ---------- */
   async function mount(container, ctx) {
     CTX = ctx; root = container;
-    LOGS = await apiList();
+    LOGS = await api.logs();
     render();
   }
 
