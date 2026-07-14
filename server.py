@@ -169,12 +169,69 @@ def _http_json(url, timeout=15):
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
-def _servings(grams, label):
+# Household serving text -> a discrete unit. USDA says "3 pieces" with a 40 g
+# serving; that means one piece is 13.3 g, which is the unit people actually
+# think in ("I ate 3 Snickers minis", not "I ate 48 grams").
+import re as _re
+
+_UNIT_WORDS = (
+    "pieces|piece|bars|bar|cans|can|bottles|bottle|slices|slice|cookies|cookie|"
+    "eggs|egg|packets|packet|packs|pack|scoops|scoop|squares|square|sticks|stick|"
+    "minis|mini|servings|serving|links|link|patties|patty|wraps|wrap|balls|ball"
+)
+
+
+def _leading_qty(text):
+    """Parse '3', '1.5', '1/2', '1 1/2' from the front of a string."""
+    t = text.strip()
+    m = _re.match(r"^(\d+)\s+(\d+)\s*/\s*(\d+)", t)          # 1 1/2
+    if m:
+        return int(m.group(1)) + int(m.group(2)) / int(m.group(3)), t[m.end():]
+    m = _re.match(r"^(\d+)\s*/\s*(\d+)", t)                  # 1/2
+    if m:
+        return int(m.group(1)) / int(m.group(2)), t[m.end():]
+    m = _re.match(r"^(\d+(?:\.\d+)?)", t)                    # 3 / 1.5
+    if m:
+        return float(m.group(1)), t[m.end():]
+    return None, t
+
+
+def parse_household(text, serving_grams):
+    """'3 pieces' + 40 g  ->  {label: 'piece', grams: 13.3}"""
+    if not text or not serving_grams:
+        return None
+    qty, rest = _leading_qty(str(text))
+    if not qty or qty <= 0:
+        qty = 1.0
+    m = _re.search(_UNIT_WORDS, rest.lower())
+    if not m:
+        return None
+    unit = m.group(0)
+    if unit.endswith("es") and unit[:-2] in ("patti", "wrap"):
+        unit = unit[:-2]
+    elif unit.endswith("s"):
+        unit = unit[:-1]
+    grams = serving_grams / qty
+    if grams <= 0:
+        return None
+    return {"label": unit, "grams": round(grams, 1), "discrete": True}
+
+
+def _servings(grams, label, household=None):
+    """Product-specific servings, most-likely first. Generic mass/volume units
+    (g, oz, ml, cup...) are added by the client, not here."""
     out = []
-    if grams and label:
-        out.append({"label": label, "grams": round(grams)})
-    out.append({"label": "100 g", "grams": 100})
+    unit = parse_household(household or label, grams)
+    if unit:
+        out.append(unit)
+    if grams:
+        out.append({"label": "serving", "grams": round(grams, 1), "discrete": True})
     return out
+
+
+def _is_liquid(unit, text):
+    blob = ("%s %s" % (unit or "", text or "")).lower()
+    return bool(_re.search(r"\bml\b|\bmlt\b|\bfl\.? ?oz\b|\bliter|\blitre|\bl\b", blob))
 
 
 def normalize_usda(f):
@@ -183,8 +240,8 @@ def normalize_usda(f):
         nut[str(n.get("nutrientNumber") or "")] = n.get("value") or 0
     size = f.get("servingSize") or 0
     unit = (f.get("servingSizeUnit") or "").lower()
-    label = f.get("householdServingFullText") or (f"{size:g} {unit}" if size else "")
-    grams = size if unit in ("g", "ml", "grm") else 0
+    household = f.get("householdServingFullText") or ""
+    grams = size if unit in ("g", "ml", "grm", "mlt") else 0
     return {
         "barcode": _digits(f.get("gtinUpc")),
         "name": (f.get("description") or "").title(),
@@ -195,7 +252,8 @@ def normalize_usda(f):
             "carbs": round(nut.get("205", 0)),
             "fat": round(nut.get("204", 0)),
         },
-        "servings": _servings(grams, label),
+        "servings": _servings(grams, household, household),
+        "isLiquid": _is_liquid(unit, household),
         "source": "usda",
     }
 
@@ -205,9 +263,9 @@ def normalize_off(p):
     kcal = n.get("energy-kcal_100g")
     if kcal is None and n.get("energy_100g") is not None:
         kcal = n["energy_100g"] / 4.184
-    import re as _re
-    m = _re.search(r"([\d.]+)\s*(g|ml)", p.get("serving_size") or "", _re.I)
-    grams = float(m.group(1)) if m else 0
+    text = p.get("serving_size") or ""
+    m = _re.search(r"([\d.]+)\s*(g|ml)\b", text, _re.I)
+    grams = float(m.group(1)) if m else float(p.get("serving_quantity") or 0)
     return {
         "barcode": _digits(p.get("code")),
         "name": p.get("product_name") or "",
@@ -218,7 +276,8 @@ def normalize_off(p):
             "carbs": round(n.get("carbohydrates_100g") or 0),
             "fat": round(n.get("fat_100g") or 0),
         },
-        "servings": _servings(grams, p.get("serving_size") or ""),
+        "servings": _servings(grams, text, text),
+        "isLiquid": _is_liquid("", text + " " + (p.get("quantity") or "")),
         "source": "off",
     }
 

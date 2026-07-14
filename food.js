@@ -84,6 +84,48 @@ window.FoodLog = (function () {
     }),
   };
 
+  /* ---------- units ----------
+   * Every food offers: its own discrete units (piece / bar / can — parsed from
+   * the product data), plus generic mass units, plus volume units for liquids.
+   * You log "3 pieces", not "48 grams". Everything converts to grams internally,
+   * which is what the macros are based on.
+   */
+  const MASS_UNITS = [
+    { label: "g", grams: 1 },
+    { label: "oz", grams: 28.3495 },
+    { label: "lb", grams: 453.592 },
+  ];
+  const VOLUME_UNITS = [                 // ~1 g/ml is fine for drinks
+    { label: "ml", grams: 1 },
+    { label: "fl oz", grams: 29.5735 },
+    { label: "cup", grams: 236.588 },
+    { label: "tbsp", grams: 14.7868 },
+    { label: "tsp", grams: 4.92892 },
+  ];
+  function unitOptions(food) {
+    const out = [];
+    (food.servings || []).forEach((s) => {
+      if (s && s.grams > 0) out.push({ label: s.label, grams: s.grams, discrete: !!s.discrete });
+    });
+    MASS_UNITS.forEach((u) => out.push(u));
+    if (food.isLiquid) VOLUME_UNITS.forEach((u) => out.push(u));
+    const seen = new Set();
+    return out.filter((u) => {
+      const k = String(u.label).toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+  function unitText(u) {
+    return u.discrete ? `${u.label} (${+u.grams.toFixed(1)} g)` : u.label;
+  }
+  function amountText(e) {
+    if (e.discrete) return `${+e.qty.toFixed(2)} × ${esc(e.unitLabel)} · ${e.grams} g`;
+    const g = e.unitLabel === "g" ? "" : ` · ${e.grams} g`;
+    return `${+e.qty.toFixed(2)} ${esc(e.unitLabel)}${g}`;
+  }
+
   /* ---------- quantity ----------
    * An entry remembers its per-100g macros and the size of ONE unit (whatever
    * amount you logged first). Quantity then just multiplies: eat a second
@@ -100,8 +142,13 @@ window.FoodLog = (function () {
         fat: Math.round((e.fat || 0) * 100 / g),
       };
     }
-    if (!e.qty || e.qty < 1) e.qty = 1;
+    if (!e.qty || e.qty <= 0) e.qty = 1;
     if (!e.unitGrams) e.unitGrams = Math.round((e.grams || 100) / e.qty) || 100;
+    if (!e.unitLabel) {
+      // entries logged before units existed: the amount they typed IS the unit
+      e.unitLabel = e.unitGrams === 1 ? "g" : "serving";
+      e.discrete = e.unitGrams !== 1;
+    }
     return e;
   }
   function recalc(e) {
@@ -116,8 +163,8 @@ window.FoodLog = (function () {
   function changeQty(id, delta) {
     const e = LOGS.find((x) => x.id === id);
     if (!e) return;
-    const next = e.qty + delta;
-    if (next < 1) return;                 // use ✕ to remove entirely
+    const next = +(e.qty + delta).toFixed(2);
+    if (next <= 0) return;                // use ✕ to remove entirely
     e.qty = next;
     recalc(e);
     render();
@@ -142,7 +189,7 @@ window.FoodLog = (function () {
     const t = totals(), tg = CTX.target;
     const items = LOGS.length
       ? LOGS.map((e) => `<li class="fitem">
-          <span class="fi-name">${esc(e.name)}<small>${e.unitGrams} g each · ${e.grams} g total</small></span>
+          <span class="fi-name">${esc(e.name)}<small>${amountText(e)}</small></span>
           <span class="qty">
             <button class="q-btn" data-dn="${e.id}" aria-label="one fewer" ${e.qty <= 1 ? "disabled" : ""}>−</button>
             <span class="q-num" aria-label="quantity">${e.qty}</span>
@@ -210,8 +257,11 @@ window.FoodLog = (function () {
 
   /* ---------- the add panel ---------- */
   function showPick(food) {
-    const def = (food.servings && food.servings[0]) || { grams: 100 };
     const m = food.per100;
+    const units = unitOptions(food);
+    // most-likely unit first: the product's own (piece/can/bar), else grams
+    const defIdx = 0;
+    const defQty = units[defIdx].discrete ? 1 : (units[defIdx].label === "g" ? 100 : 1);
     const badge = food.source === "local" ? `<span class="fsrc local">your correction</span>`
       : `<span class="fsrc">${esc(food.source)}</span>`;
     results().innerHTML = `<div class="fpick">
@@ -219,32 +269,43 @@ window.FoodLog = (function () {
         <button class="btn-ghost" id="fEdit">✎ Edit</button></div>
       <small>${esc(food.brand)} · ${m.kcal} kcal/100g</small>
       <div class="fpick-row">
-        <label>Amount (g)<input id="fGrams" type="number" min="1" value="${def.grams}"/></label>
-        <div class="fpick-macros" id="fPickMacros"></div>
+        <label>Quantity<input id="fQty" type="number" min="0" step="any" value="${defQty}"/></label>
+        <label>Unit<select id="fUnit">
+          ${units.map((u, i) => `<option value="${i}" ${i === defIdx ? "selected" : ""}>${esc(unitText(u))}</option>`).join("")}
+        </select></label>
       </div>
+      <div class="fpick-macros" id="fPickMacros"></div>
       <div class="form-actions">
         <button class="btn-ghost" id="fCancel">Cancel</button>
         <button class="btn-primary" id="fConfirm">Add to today</button>
       </div>
     </div>`;
-    const gi = results().querySelector("#fGrams");
+    const qi = results().querySelector("#fQty");
+    const ui = results().querySelector("#fUnit");
+    const cur = () => units[+ui.value] || units[0];
     const paint = () => {
-      const s = num(gi.value) / 100;
+      const grams = num(qi.value) * cur().grams;
+      const s = grams / 100;
       results().querySelector("#fPickMacros").textContent =
-        `${Math.round(m.kcal * s)} kcal · ${Math.round(m.protein * s)}p ${Math.round(m.carbs * s)}c ${Math.round(m.fat * s)}f`;
+        `${Math.round(grams)} g → ${Math.round(m.kcal * s)} kcal · ${Math.round(m.protein * s)}p ${Math.round(m.carbs * s)}c ${Math.round(m.fat * s)}f`;
     };
-    gi.addEventListener("input", paint); paint();
+    qi.addEventListener("input", paint);
+    ui.addEventListener("change", () => {
+      const u = cur();
+      qi.value = u.discrete ? 1 : (u.label === "g" ? 100 : 1);   // sensible default per unit
+      paint();
+    });
+    paint();
     results().querySelector("#fEdit").addEventListener("click", () => showEditor(food));
     results().querySelector("#fCancel").addEventListener("click", () => { results().innerHTML = ""; });
     results().querySelector("#fConfirm").addEventListener("click", () => {
-      const grams = Math.round(num(gi.value));
-      if (grams <= 0) return;
-      // whatever amount you log becomes ONE unit; the +/- stepper multiplies it
+      const u = cur(), qty = num(qi.value);
+      if (qty <= 0) return;
       addEntry(recalc({
         id: uid(), profileId: CTX.profileId, date: CTX.date, time: new Date().toISOString(),
         name: food.name, barcode: food.barcode || "",
         per100: { kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat },
-        unitGrams: grams, qty: 1,
+        unitGrams: u.grams, unitLabel: u.label, discrete: !!u.discrete, qty: qty,
       }));
       results().innerHTML = "";
     });
@@ -253,6 +314,7 @@ window.FoodLog = (function () {
   /* ---------- editor: fix a food, permanently ---------- */
   function showEditor(food) {
     const m = food.per100 || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+    const du = (food.servings || []).find((s) => s.discrete) || {};
     results().innerHTML = `<div class="fpick">
       <b>Edit food — saved corrections apply to all future scans</b>
       <div class="fedit-grid">
@@ -262,7 +324,10 @@ window.FoodLog = (function () {
         <label>Protein /100g<input id="eP" type="number" min="0" value="${m.protein}"/></label>
         <label>Carbs /100g<input id="eC" type="number" min="0" value="${m.carbs}"/></label>
         <label>Fat /100g<input id="eF" type="number" min="0" value="${m.fat}"/></label>
+        <label>Unit name <span class="hint">e.g. piece, mini, bar</span><input id="eUnit" value="${esc(du.label || "")}"/></label>
+        <label>Grams per unit<input id="eUnitG" type="number" min="0" step="any" value="${du.grams || ""}"/></label>
       </div>
+      <label class="fchk"><input type="checkbox" id="eLiquid" ${food.isLiquid ? "checked" : ""}/> This is a liquid (offer ml / fl oz / cup)</label>
       <div class="form-actions">
         <button class="btn-ghost" id="eCancel">Cancel</button>
         <button class="btn-primary" id="eSave">Save correction</button>
@@ -270,17 +335,25 @@ window.FoodLog = (function () {
     </div>`;
     results().querySelector("#eCancel").addEventListener("click", () => showPick(food));
     results().querySelector("#eSave").addEventListener("click", async () => {
+      const q = (s) => results().querySelector(s);
+      // a user-defined unit ("1 mini = 16 g") is saved with the food, so it's
+      // offered on every future log of this barcode
+      const uLabel = q("#eUnit").value.trim();
+      const uGrams = num(q("#eUnitG").value);
+      let servings = (food.servings || []).filter(
+        (s) => String(s.label).toLowerCase() !== uLabel.toLowerCase());
+      if (uLabel && uGrams > 0) servings.unshift({ label: uLabel, grams: uGrams, discrete: true });
+
       const fixed = {
         barcode: food.barcode,
-        name: results().querySelector("#eName").value.trim() || food.name,
-        brand: results().querySelector("#eBrand").value.trim(),
+        name: q("#eName").value.trim() || food.name,
+        brand: q("#eBrand").value.trim(),
         per100: {
-          kcal: num(results().querySelector("#eKcal").value),
-          protein: num(results().querySelector("#eP").value),
-          carbs: num(results().querySelector("#eC").value),
-          fat: num(results().querySelector("#eF").value),
+          kcal: num(q("#eKcal").value), protein: num(q("#eP").value),
+          carbs: num(q("#eC").value), fat: num(q("#eF").value),
         },
-        servings: food.servings || [{ label: "100 g", grams: 100 }],
+        servings: servings,
+        isLiquid: q("#eLiquid").checked,
         source: "local",
       };
       await api.saveFood(fixed);
