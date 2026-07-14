@@ -319,7 +319,7 @@ window.FoodLog = (function () {
     const formats = F ? [F.UPC_A, F.UPC_E, F.EAN_13] : undefined;
     const scanner = new Html5Qrcode("reader", formats ? { formatsToSupport: formats } : undefined);
 
-    let last = null, done = false;
+    let last = null, done = false, rejects = 0;
     const msg = overlay.querySelector("#scanMsg");
     const close = async () => {
       try { await scanner.stop(); } catch (e) { /* already stopped */ }
@@ -344,7 +344,10 @@ window.FoodLog = (function () {
       async (text) => {
         if (done) return;
         if (!validBarcode(text)) {          // reject misreads outright
-          msg.textContent = "Misread (" + text + ") — hold steady…";
+          rejects++;
+          msg.innerHTML = rejects < 6
+            ? "Misread (" + text + ") — hold steady…"
+            : `Struggling to read this one.<br/>Close and type the digits printed under the barcode.`;
           last = null;
           return;
         }

@@ -375,8 +375,31 @@ class Handler(SimpleHTTPRequestHandler):
         self._json({"ok": True}, 200, extra_headers=[("Set-Cookie", cookie)])
 
     # ----- routing -----
+    ASSETS = ["app.js", "food.js", "model.js", "charts.js", "styles.css"]
+
+    def _index(self):
+        """Serve index.html with a version stamped onto every asset URL, derived
+        from the files' mtimes. A redeploy changes the stamp, so browsers cannot
+        serve a stale app.js/food.js — which silently happened twice already."""
+        try:
+            v = str(int(max(os.path.getmtime(f) for f in self.ASSETS if os.path.exists(f))))
+            with open("index.html", "r") as fh:
+                html = fh.read()
+            for f in self.ASSETS:
+                html = html.replace('"%s"' % f, '"%s?v=%s"' % (f, v))
+            body = html.encode()
+        except Exception:
+            return super().do_GET()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            return self._index()
         if path == "/api/profiles":
             return self._guard() and self._list_profiles()
         if path == "/api/food":
