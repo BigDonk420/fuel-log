@@ -177,6 +177,12 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .fitem.empty { color: var(--muted); justify-content: center; border: none; }
 .fi-name { flex: 1; min-width: 0; } .fi-name small { color: var(--muted); margin-left: 6px; }
 .fi-macros { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* quantity stepper: bump a repeat food instead of re-entering it */
+.qty { display: flex; align-items: center; gap: 2px; flex: none; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+.q-btn { width: 28px; height: 28px; border-radius: 50%; border: none; background: transparent; color: var(--text); font-size: 17px; line-height: 1; padding: 0; display: flex; align-items: center; justify-content: center; }
+.q-btn:hover:not(:disabled) { background: var(--accent); color: #06231c; }
+.q-btn:disabled { color: var(--muted); opacity: .35; cursor: default; }
+.q-num { min-width: 20px; text-align: center; font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }
 .fi-del, .fi-edit { background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px 8px; flex: none; }
 .fi-del:hover { color: var(--danger); }
 .fi-edit:hover { color: var(--accent); }
@@ -243,6 +249,8 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
   .glass { width: 30px; height: 40px; }
   .glasses { gap: 8px; }
   .fi-del, .fi-edit { min-width: 40px; min-height: 40px; font-size: 16px; }
+  .q-btn { width: 36px; height: 36px; font-size: 19px; }
+  .q-num { min-width: 24px; font-size: 15px; }
 
   /* races stack instead of squeezing 5 controls into a row */
   .race-row { grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }

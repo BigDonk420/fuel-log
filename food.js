@@ -84,6 +84,46 @@ window.FoodLog = (function () {
     }),
   };
 
+  /* ---------- quantity ----------
+   * An entry remembers its per-100g macros and the size of ONE unit (whatever
+   * amount you logged first). Quantity then just multiplies: eat a second
+   * banana and you tap "+" instead of re-adding the food.
+   */
+  function normalize(e) {
+    // backfill entries logged before quantity existed
+    if (!e.per100) {
+      const g = e.grams > 0 ? e.grams : 100;
+      e.per100 = {
+        kcal: Math.round((e.kcal || 0) * 100 / g),
+        protein: Math.round((e.protein || 0) * 100 / g),
+        carbs: Math.round((e.carbs || 0) * 100 / g),
+        fat: Math.round((e.fat || 0) * 100 / g),
+      };
+    }
+    if (!e.qty || e.qty < 1) e.qty = 1;
+    if (!e.unitGrams) e.unitGrams = Math.round((e.grams || 100) / e.qty) || 100;
+    return e;
+  }
+  function recalc(e) {
+    e.grams = Math.round(e.unitGrams * e.qty);
+    const s = e.grams / 100;
+    e.kcal = Math.round(e.per100.kcal * s);
+    e.protein = Math.round(e.per100.protein * s);
+    e.carbs = Math.round(e.per100.carbs * s);
+    e.fat = Math.round(e.per100.fat * s);
+    return e;
+  }
+  function changeQty(id, delta) {
+    const e = LOGS.find((x) => x.id === id);
+    if (!e) return;
+    const next = e.qty + delta;
+    if (next < 1) return;                 // use ✕ to remove entirely
+    e.qty = next;
+    recalc(e);
+    render();
+    api.saveLog(e).catch((err) => console.error("qty save failed", err));
+  }
+
   /* ---------- totals + main render ---------- */
   function totals() {
     return LOGS.reduce((t, e) => {
@@ -102,7 +142,12 @@ window.FoodLog = (function () {
     const t = totals(), tg = CTX.target;
     const items = LOGS.length
       ? LOGS.map((e) => `<li class="fitem">
-          <span class="fi-name">${esc(e.name)}<small>${e.grams} g</small></span>
+          <span class="fi-name">${esc(e.name)}<small>${e.unitGrams} g each · ${e.grams} g total</small></span>
+          <span class="qty">
+            <button class="q-btn" data-dn="${e.id}" aria-label="one fewer" ${e.qty <= 1 ? "disabled" : ""}>−</button>
+            <span class="q-num" aria-label="quantity">${e.qty}</span>
+            <button class="q-btn" data-up="${e.id}" aria-label="one more">+</button>
+          </span>
           <span class="fi-macros">${e.kcal} kcal · ${e.protein}p ${e.carbs}c ${e.fat}f</span>
           <button class="fi-edit" data-id="${e.id}" aria-label="edit">✎</button>
           <button class="fi-del" data-id="${e.id}" aria-label="remove">✕</button>
@@ -126,6 +171,8 @@ window.FoodLog = (function () {
 
     root.querySelectorAll(".fi-del").forEach((b) => b.addEventListener("click", () => removeItem(b.dataset.id)));
     root.querySelectorAll(".fi-edit").forEach((b) => b.addEventListener("click", () => editLoggedItem(b.dataset.id)));
+    root.querySelectorAll("[data-up]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.up, +1)));
+    root.querySelectorAll("[data-dn]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.dn, -1)));
     root.querySelector("#fScan").addEventListener("click", openScanner);
     root.querySelector("#fLookup").addEventListener("click", runQuery);
     root.querySelector("#fQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") runQuery(); });
@@ -190,13 +237,15 @@ window.FoodLog = (function () {
     results().querySelector("#fEdit").addEventListener("click", () => showEditor(food));
     results().querySelector("#fCancel").addEventListener("click", () => { results().innerHTML = ""; });
     results().querySelector("#fConfirm").addEventListener("click", () => {
-      const grams = num(gi.value), s = grams / 100;
-      addEntry({
+      const grams = Math.round(num(gi.value));
+      if (grams <= 0) return;
+      // whatever amount you log becomes ONE unit; the +/- stepper multiplies it
+      addEntry(recalc({
         id: uid(), profileId: CTX.profileId, date: CTX.date, time: new Date().toISOString(),
-        name: food.name, barcode: food.barcode || "", grams: Math.round(grams),
-        kcal: Math.round(m.kcal * s), protein: Math.round(m.protein * s),
-        carbs: Math.round(m.carbs * s), fat: Math.round(m.fat * s),
-      });
+        name: food.name, barcode: food.barcode || "",
+        per100: { kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat },
+        unitGrams: grams, qty: 1,
+      }));
       results().innerHTML = "";
     });
   }
@@ -268,6 +317,16 @@ window.FoodLog = (function () {
       e.protein = Math.round(num(q("#lP").value));
       e.carbs = Math.round(num(q("#lC").value));
       e.fat = Math.round(num(q("#lF").value));
+      // re-derive the per-100g basis and unit size so the +/- stepper keeps
+      // scaling correctly after a manual edit
+      if (e.grams > 0) {
+        const s = 100 / e.grams;
+        e.per100 = {
+          kcal: Math.round(e.kcal * s), protein: Math.round(e.protein * s),
+          carbs: Math.round(e.carbs * s), fat: Math.round(e.fat * s),
+        };
+        e.unitGrams = Math.round(e.grams / (e.qty || 1)) || e.grams;
+      }
       api.saveLog(e).catch((err) => console.error(err));
       // propagate back to the food database so future scans are right
       const fix = q("#lFix");
@@ -410,7 +469,7 @@ window.FoodLog = (function () {
 
   async function mount(container, ctx) {
     CTX = ctx; root = container;
-    LOGS = await api.logs();
+    LOGS = (await api.logs()).map(normalize);   // backfill pre-quantity entries
     render();
   }
 
