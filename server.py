@@ -16,6 +16,7 @@ always-on Mac Mini, fronted by Tailscale Serve/Funnel for HTTPS.
     python3 server.py            # http://localhost:8137
 """
 import base64
+import datetime
 import http.cookies
 import json
 import os
@@ -465,6 +466,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._guard() and self._list_food(urlparse(self.path))
         if path == "/api/foods":
             return self._guard() and self._list_food_defs()
+        if path == "/api/frequent":
+            return self._guard() and self._frequent(urlparse(self.path))
         if path == "/api/lookup":
             return self._guard() and self._lookup(urlparse(self.path))
         if path == "/api/search":
@@ -607,6 +610,46 @@ class Handler(SimpleHTTPRequestHandler):
         db.commit()
         db.close()
         self._json({"ok": True})
+
+    def _frequent(self, parsed):
+        """Foods this profile logs most often, newest wins as the template.
+        Derived from the log itself — nothing for the user to curate."""
+        qs = parse_qs(parsed.query)
+        profile = qs.get("profile", [""])[0]
+        days = int(qs.get("days", ["30"])[0])
+        limit = int(qs.get("limit", ["8"])[0])
+        cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+        db = db_conn()
+        rows = db.execute(
+            "SELECT data, log_date FROM food_logs WHERE profile_id = ? AND log_date >= ? "
+            "ORDER BY log_date",
+            (profile, cutoff),
+        ).fetchall()
+        db.close()
+
+        agg = {}
+        for data, when in rows:
+            try:
+                e = json.loads(data)
+            except Exception:
+                continue
+            key = (e.get("barcode") or (e.get("name") or "").lower()).strip()
+            if not key:
+                continue
+            a = agg.setdefault(key, {"key": key, "count": 0, "last": ""})
+            a["count"] += 1
+            if when >= a["last"]:          # most recent log becomes the template
+                a["last"] = when
+                a["name"] = e.get("name")
+                a["barcode"] = e.get("barcode") or ""
+                a["per100"] = e.get("per100")
+                a["unitGrams"] = e.get("unitGrams")
+                a["unitLabel"] = e.get("unitLabel")
+                a["discrete"] = bool(e.get("discrete"))
+                a["qty"] = e.get("qty", 1)
+        out = [a for a in agg.values() if a.get("per100")]
+        out.sort(key=lambda a: (-a["count"], a.get("name") or ""))
+        self._json(out[:limit])
 
     def _lookup(self, parsed):
         code = parse_qs(parsed.query).get("code", [""])[0]

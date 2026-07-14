@@ -193,6 +193,19 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .fedit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
 .fchk { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .fchk input { width: auto; }
+/* quick-add chips: favourites (starred) + your most-logged foods */
+.quick { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 999px; padding: 8px 14px; font-size: 13px; max-width: 100%;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.chip:hover small { color: inherit; opacity: .8; }
+.chip-star { color: var(--carb); font-size: 11px; }
+.btn-ghost.star { padding: 8px 10px; font-size: 15px; line-height: 1; }
+.btn-ghost.star.on { color: var(--carb); border-color: var(--carb); }
 .fadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .fadd #fQuery { flex: 1; min-width: 180px; }
 .fadd .btn-primary i { font-style: normal; margin-right: 4px; }

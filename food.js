@@ -18,7 +18,17 @@ window.FoodLog = (function () {
 
   let CTX = null;   // { profileId, date, target }
   let LOGS = [];
+  let FAVS = [];    // starred foods (from the foods table)
+  let FREQ = [];    // auto-derived from the log
+  let QUICK = [];   // the rendered chip list (favourites + frequents)
   let root = null;
+
+  // A food without a barcode (USDA Foundation items, custom foods) still needs a
+  // stable key to be favourited under.
+  function foodKey(f) {
+    return f.barcode || "name:" + String(f.name || "").toLowerCase().replace(/\s+/g, "-").slice(0, 60);
+  }
+  const isFav = (f) => FAVS.some((x) => x.barcode === foodKey(f));
 
   /* ---------- barcode validation ----------
    * Misreads are the enemy: a UPC-E symbol decoded as EAN-8 yields a code that
@@ -82,7 +92,48 @@ window.FoodLog = (function () {
     saveFood: (f) => fetch("/api/foods/" + encodeURIComponent(f.barcode), {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f),
     }),
+    async foods() {
+      const r = await fetch("/api/foods");
+      return r.ok ? r.json() : [];
+    },
+    async frequent() {
+      const r = await fetch("/api/frequent?profile=" + encodeURIComponent(CTX.profileId) + "&limit=8");
+      return r.ok ? r.json() : [];
+    },
   };
+
+  /* ---------- quick add ----------
+   * Favourites (starred) and Frequents (auto-derived from the log) become
+   * one-tap chips. Tapping something already logged today bumps its quantity
+   * instead of creating a duplicate row.
+   */
+  function specFromFood(f) {
+    const u = (f.servings || []).find((s) => s && s.grams > 0) || { label: "g", grams: 1, discrete: false };
+    return {
+      name: f.name, barcode: f.barcode || "", per100: f.per100,
+      unitGrams: u.grams, unitLabel: u.label, discrete: !!u.discrete,
+      qty: u.discrete ? 1 : (u.label === "g" ? 100 : 1),
+    };
+  }
+  function quickAdd(spec) {
+    const key = spec.barcode || String(spec.name || "").toLowerCase();
+    const hit = LOGS.find((e) => (e.barcode || String(e.name || "").toLowerCase()) === key);
+    if (hit) return changeQty(hit.id, 1);          // bump, don't duplicate
+    addEntry(recalc({
+      id: uid(), profileId: CTX.profileId, date: CTX.date, time: new Date().toISOString(),
+      name: spec.name, barcode: spec.barcode || "",
+      per100: spec.per100, unitGrams: spec.unitGrams || 1,
+      unitLabel: spec.unitLabel || "g", discrete: !!spec.discrete,
+      qty: spec.qty || 1,
+    }));
+  }
+  async function toggleFav(food) {
+    const key = foodKey(food);
+    const on = !isFav(food);
+    await api.saveFood(Object.assign({}, food, { barcode: key, favorite: on, source: "local" }));
+    FAVS = (await api.foods()).filter((f) => f.favorite);
+    return on;
+  }
 
   /* ---------- units ----------
    * Every food offers: its own discrete units (piece / bar / can — parsed from
@@ -201,6 +252,21 @@ window.FoodLog = (function () {
         </li>`).join("")
       : `<li class="fitem empty">No food logged yet today.</li>`;
 
+    // one-tap chips: starred favourites first, then whatever you log most often
+    const favSpecs = FAVS.map((f) => Object.assign(specFromFood(f), { star: true }));
+    const favKeys = new Set(favSpecs.map((s) => s.barcode || s.name.toLowerCase()));
+    const freqSpecs = FREQ
+      .filter((f) => !favKeys.has(f.barcode || String(f.name || "").toLowerCase()))
+      .map((f) => Object.assign({}, f, { star: false }));
+    QUICK = favSpecs.concat(freqSpecs).slice(0, 10);
+    const quickHtml = QUICK.length
+      ? `<div class="quick">${QUICK.map((s, i) => `
+          <button class="chip" data-quick="${i}">
+            ${s.star ? '<span class="chip-star">★</span>' : ""}${esc(s.name)}
+            <small>${s.discrete ? `1 ${esc(s.unitLabel)}` : `${s.qty} ${esc(s.unitLabel)}`}</small>
+          </button>`).join("")}</div>`
+      : "";
+
     root.innerHTML = `<h3>Today's food — vs targets</h3>
       <div class="fbars">
         ${bar("Calories", t.kcal, tg.calories, "f-cal")}
@@ -209,6 +275,7 @@ window.FoodLog = (function () {
         ${bar("Fat (g)", t.fat, tg.fat, "f-fat")}
       </div>
       <ul class="flist">${items}</ul>
+      ${quickHtml}
       <div class="fadd">
         <button class="btn-primary" id="fScan"><i>▣</i> Scan barcode</button>
         <input id="fQuery" placeholder="Search food, or type a barcode number"/>
@@ -220,6 +287,8 @@ window.FoodLog = (function () {
     root.querySelectorAll(".fi-edit").forEach((b) => b.addEventListener("click", () => editLoggedItem(b.dataset.id)));
     root.querySelectorAll("[data-up]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.up, +1)));
     root.querySelectorAll("[data-dn]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.dn, -1)));
+    root.querySelectorAll("[data-quick]").forEach((b) =>
+      b.addEventListener("click", () => quickAdd(QUICK[+b.dataset.quick])));
     root.querySelector("#fScan").addEventListener("click", openScanner);
     root.querySelector("#fLookup").addEventListener("click", runQuery);
     root.querySelector("#fQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") runQuery(); });
@@ -266,6 +335,7 @@ window.FoodLog = (function () {
       : `<span class="fsrc">${esc(food.source)}</span>`;
     results().innerHTML = `<div class="fpick">
       <div class="fpick-head"><b>${esc(food.name)}</b> ${badge}
+        <button class="btn-ghost star ${isFav(food) ? "on" : ""}" id="fStar" aria-label="favourite">${isFav(food) ? "★" : "☆"}</button>
         <button class="btn-ghost" id="fEdit">✎ Edit</button></div>
       <small>${esc(food.brand)} · ${m.kcal} kcal/100g</small>
       <div class="fpick-row">
@@ -296,6 +366,17 @@ window.FoodLog = (function () {
       paint();
     });
     paint();
+    results().querySelector("#fStar").addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      const on = await toggleFav(food);
+      btn.disabled = false;
+      btn.textContent = on ? "★" : "☆";
+      btn.classList.toggle("on", on);
+      render();                       // refresh the chips, keep the panel open
+      results().innerHTML = "";
+      showPick(food);
+    });
     results().querySelector("#fEdit").addEventListener("click", () => showEditor(food));
     results().querySelector("#fCancel").addEventListener("click", () => { results().innerHTML = ""; });
     results().querySelector("#fConfirm").addEventListener("click", () => {
@@ -542,7 +623,10 @@ window.FoodLog = (function () {
 
   async function mount(container, ctx) {
     CTX = ctx; root = container;
-    LOGS = (await api.logs()).map(normalize);   // backfill pre-quantity entries
+    const [logs, foods, freq] = await Promise.all([api.logs(), api.foods(), api.frequent()]);
+    LOGS = logs.map(normalize);                 // backfill pre-quantity entries
+    FAVS = foods.filter((f) => f.favorite);
+    FREQ = freq;
     render();
   }
 
