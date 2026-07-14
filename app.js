@@ -476,6 +476,12 @@
       date: todayKey(),
       target: { calories: plan.calories, protein: plan.macros.protein, carbs: plan.macros.carbs, fat: plan.macros.fat },
     });
+
+    // floating scan button (CSS shows it on mobile only) — the phone's main job
+    // is logging food, so keep it one tap away from anywhere on the page
+    const fab = el("button", { class: "fab", "aria-label": "Scan a barcode" }, "▣");
+    fab.addEventListener("click", () => window.FoodLog.openScanner());
+    app.appendChild(fab);
   }
 
   function renderGlasses(container, storedUser, goal, card) {

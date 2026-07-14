@@ -16,6 +16,11 @@
   --ok: #34d0a8;
   --radius: 14px;
   --shadow: 0 1px 0 rgba(255,255,255,0.03), 0 8px 24px rgba(0,0,0,0.25);
+  /* iPhone notch / home-indicator insets (0 everywhere else) */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -28,7 +33,13 @@ body {
   margin: 0; background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
+  -webkit-text-size-adjust: 100%;      /* stop iOS reflowing text on rotate */
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
 }
+/* kill the 300ms double-tap delay on touch */
+button, .glass, label, select, a { touch-action: manipulation; }
+
 h1 { font-size: 24px; margin: 0 0 4px; font-weight: 600; }
 h2 { font-size: 19px; margin: 0; font-weight: 600; }
 h3 { font-size: 14px; margin: 0 0 12px; font-weight: 600; letter-spacing: .01em; color: var(--muted); text-transform: uppercase; }
@@ -40,6 +51,10 @@ h3 { font-size: 14px; margin: 0 0 12px; font-weight: 600; letter-spacing: .01em;
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--surface);
   position: sticky; top: 0; z-index: 5;
+  /* in standalone mode this sits under the status bar without the inset */
+  padding-top: calc(14px + var(--safe-t));
+  padding-left: calc(22px + var(--safe-l));
+  padding-right: calc(22px + var(--safe-r));
 }
 .brand { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; }
 .brand-2 { color: var(--accent); }
@@ -48,7 +63,9 @@ h3 { font-size: 14px; margin: 0 0 12px; font-weight: 600; letter-spacing: .01em;
 
 select, input, textarea {
   background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 10px; padding: 9px 11px; font: inherit; width: 100%;
+  border-radius: 10px; padding: 10px 11px; width: 100%;
+  font-family: inherit;
+  font-size: 16px;   /* MUST be >=16px or iOS Safari zooms in on focus */
 }
 select { cursor: pointer; }
 .user-switch select { width: auto; min-width: 130px; }
@@ -56,7 +73,7 @@ select { cursor: pointer; }
 button { font: inherit; cursor: pointer; border-radius: 10px; }
 .btn-primary { background: var(--accent); color: #06231c; border: none; padding: 11px 20px; font-weight: 600; }
 .btn-primary:hover { filter: brightness(1.06); }
-.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); padding: 8px 12px; }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); padding: 9px 12px; }
 .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
 .btn-ghost.danger:hover { color: var(--danger); border-color: var(--danger); }
 
@@ -79,7 +96,12 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 
 /* dashboard */
-.dash { max-width: 1080px; margin: 0 auto; padding: 22px; }
+.dash {
+  max-width: 1080px; margin: 0 auto; padding: 22px;
+  padding-left: calc(22px + var(--safe-l));
+  padding-right: calc(22px + var(--safe-r));
+  padding-bottom: calc(22px + var(--safe-b));
+}
 .dash-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
 .src-note { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .race-chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-size: 13px; }
@@ -105,7 +127,7 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .macro-legend span { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
 .macro-legend b { margin-left: auto; }
 .macro-legend small { color: var(--muted); min-width: 96px; text-align: right; }
-.sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex: none; }
 .sw.carb { background: var(--carb); } .sw.protein { background: var(--protein); } .sw.fat { background: var(--fat); }
 .sw.bar { background: var(--accent-2); } .sw.dot { background: var(--carb); border-radius: 50%; }
 
@@ -126,7 +148,7 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .hydro-num { font-size: 22px; font-weight: 700; fill: var(--text); }
 .hydro-lbl { font-size: 11px; fill: var(--muted); }
 .glasses { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 10px; }
-.glass { width: 22px; height: 30px; border-radius: 3px 3px 6px 6px; border: 2px solid var(--accent-2); background: transparent; padding: 0; transition: background .15s; }
+.glass { width: 24px; height: 32px; border-radius: 3px 3px 6px 6px; border: 2px solid var(--accent-2); background: transparent; padding: 0; transition: background .15s; }
 .glass.on { background: var(--accent-2); }
 
 .chart-week { width: 100%; height: auto; display: block; margin-bottom: 8px; }
@@ -153,13 +175,13 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .flist { list-style: none; padding: 0; margin: 0 0 14px; }
 .fitem { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .fitem.empty { color: var(--muted); justify-content: center; border: none; }
-.fi-name { flex: 1; } .fi-name small { color: var(--muted); margin-left: 6px; }
-.fi-macros { color: var(--muted); font-size: 12px; }
-.fi-del, .fi-edit { background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px 6px; }
+.fi-name { flex: 1; min-width: 0; } .fi-name small { color: var(--muted); margin-left: 6px; }
+.fi-macros { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fi-del, .fi-edit { background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px 8px; flex: none; }
 .fi-del:hover { color: var(--danger); }
 .fi-edit:hover { color: var(--accent); }
-.fpick-head { display: flex; align-items: center; gap: 8px; }
-.fpick-head b { flex: 1; }
+.fpick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fpick-head b { flex: 1; min-width: 0; }
 .fsrc { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
 .fsrc.local { color: var(--accent); border-color: var(--accent); }
 .fedit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
@@ -170,22 +192,76 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .fadd .btn-primary i { font-style: normal; margin-right: 4px; }
 .fresult, .fpick { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
 .fresult small, .fpick small { display: block; color: var(--muted); font-size: 12px; }
+.fr-info { min-width: 0; }
 .fpick { flex-direction: column; align-items: stretch; }
 .fpick-row { display: flex; gap: 16px; align-items: flex-end; margin: 10px 0; }
 .fpick-macros { color: var(--muted); font-size: 13px; padding-bottom: 8px; }
-.scan-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.scan-box { background: var(--surface); border-radius: 14px; padding: 16px; width: min(92vw, 420px); }
+
+/* scanner */
+.scan-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 50; padding: calc(12px + var(--safe-t)) 12px calc(12px + var(--safe-b)); }
+.scan-box { background: var(--surface); border-radius: 14px; padding: 16px; width: min(92vw, 420px); max-height: 100%; overflow: auto; }
 .scan-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-#reader { width: 100%; position: relative; overflow: hidden; border-radius: 8px; }
+#reader { width: 100%; position: relative; overflow: hidden; border-radius: 8px; background: #000; }
 #reader video, #reader canvas { width: 100%; height: auto; display: block; }
 #reader canvas.drawingBuffer { position: absolute; top: 0; left: 0; }
 .scan-msg { color: var(--muted); font-size: 13px; margin-top: 10px; text-align: center; }
-.photo-btn { display: block; text-align: center; margin-top: 12px; cursor: pointer; padding: 10px; }
+.photo-btn { display: block; text-align: center; margin-top: 12px; cursor: pointer; padding: 12px; }
 
+/* floating scan button — mobile only, so logging is always one tap away */
+.fab {
+  display: none;
+  position: fixed; z-index: 20;
+  right: calc(16px + var(--safe-r));
+  bottom: calc(16px + var(--safe-b));
+  width: 60px; height: 60px; border-radius: 50%;
+  background: var(--accent); color: #06231c; border: none;
+  font-size: 26px; line-height: 1;
+  box-shadow: 0 6px 20px rgba(0,0,0,.4);
+  align-items: center; justify-content: center;
+}
+.fab:active { transform: scale(.94); }
+
+/* ---------------------------------------------------------------- mobile */
 @media (max-width: 820px) {
-  .fbars { grid-template-columns: 1fr; }
-  .card-row { grid-template-columns: 1fr; }
-  .timing { grid-template-columns: 1fr; }
-  .grid2 { grid-template-columns: 1fr; }
-  .race-row { grid-template-columns: 1fr 1fr; }
+  .card-row, .timing, .grid2, .fbars, .fedit-grid { grid-template-columns: 1fr; }
+
+  /* topbar stacks: brand, then a full-width user row */
+  .topbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; padding-top: calc(12px + var(--safe-t)); }
+  .user-switch { width: 100%; }
+  .user-switch select { flex: 1; min-width: 0; width: auto; }
+  .user-switch .btn-ghost { flex: none; padding: 9px 10px; font-size: 14px; }
+
+  .dash { padding: 14px; padding-bottom: calc(90px + var(--safe-b)); }  /* room for the FAB */
+  .screen { margin: 20px auto; padding: 0 14px; }
+  .onboard.card { padding: 20px; }
+  .card { padding: 16px; }
+  .dash-head { flex-direction: column; gap: 10px; }
+  .race-chip { align-self: flex-start; }
+
+  /* comfortable touch targets (Apple's guidance is ~44px) */
+  .btn-primary, .btn-ghost { min-height: 44px; }
+  .glass { width: 30px; height: 40px; }
+  .glasses { gap: 8px; }
+  .fi-del, .fi-edit { min-width: 40px; min-height: 40px; font-size: 16px; }
+
+  /* races stack instead of squeezing 5 controls into a row */
+  .race-row { grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+  .race-row .r-name { grid-column: 1 / -1; }
+  .race-row .r-del { grid-column: 1 / -1; justify-self: end; }
+
+  /* food: scan is the hero action, search sits below it */
+  .fadd { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .fadd #fScan { grid-column: 1 / -1; width: 100%; }
+  .fadd #fQuery { min-width: 0; }
+  .fitem { flex-wrap: wrap; }
+  .fi-macros { flex-basis: 100%; order: 3; }
+  .fpick-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .macro-legend small { min-width: 0; }
+
+  .fab { display: flex; }
+}
+
+@media (max-width: 380px) {
+  .user-switch .btn-ghost { padding: 9px 8px; font-size: 13px; }
+  .chart-gauge, .chart-donut { max-width: 100%; }
 }

@@ -414,5 +414,5 @@ window.FoodLog = (function () {
     render();
   }
 
-  return { mount };
+  return { mount, openScanner };
 })();
