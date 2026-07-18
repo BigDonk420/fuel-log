@@ -363,15 +363,43 @@
     return { rest: "Rest day", recovery: "Recovery", easy: "Easy run", tempo: "Tempo", quality: "Quality", long: "Long run", race: "Race" }[t] || t;
   }
 
+  async function saveTodayPlan(session) {
+    const u = Store.current();
+    u.plans = u.plans || {};
+    if (session) u.plans[todayKey()] = session;
+    else delete u.plans[todayKey()];
+    try { await Store.upsert(u); } catch (e) { console.error("plan save failed", e); }
+    renderDashboard();
+  }
+
   async function renderDashboard() {
     const stored = Store.current();
     if (!stored) return route();
     const user = decorate(stored);
     const { source, days } = await Provider.getWeek(user);
-    const weekPlans = days.map((d) => NutriModel.dayPlan(user, d));
     const todayIdx = days.findIndex((d) => d.isToday);
-    const plan = weekPlans[todayIdx >= 0 ? todayIdx : weekPlans.length - 1];
-    const today = days[todayIdx >= 0 ? todayIdx : days.length - 1];
+    const idx = todayIdx >= 0 ? todayIdx : days.length - 1;
+
+    // A manually planned session for today overrides the (currently empty)
+    // intervals data, so targets, energy availability and the timeline all
+    // reflect what you're about to do.
+    const planned = stored.plans && stored.plans[todayKey()];
+    if (planned && planned.type) {
+      days[idx] = Object.assign({}, days[idx], {
+        type: planned.type,
+        durationMin: planned.durationMin || 0,
+        startTime: planned.startTime || "",
+        eeeKcal: eeeFor(planned, user.weightKg),
+        tss: tssFor(planned),
+      });
+    }
+
+    const weekPlans = days.map((d) => NutriModel.dayPlan(user, d));
+    const plan = weekPlans[idx];
+    const today = days[idx];
+    const session = today.type && today.type !== "rest"
+      ? { type: today.type, durationMin: today.durationMin, startTime: today.startTime || "" }
+      : null;
 
     // 7-day rolling energy availability.
     const eaVals = weekPlans.map((p) => p.energyAvailability.value);
@@ -390,10 +418,18 @@
       : `<div class="race-chip muted">No upcoming race set</div>`;
     main.appendChild(
       el("div", { class: "dash-head" },
-        `<div><h2>Hi ${stored.name.split(" ")[0]} — today: ${typeLabel(today.type)}${today.durationMin ? " · " + today.durationMin + " min" : ""}</h2>
+        `<div><h2>Hi ${stored.name.split(" ")[0]}</h2>
            <div class="src-note">Training data: ${source}</div></div>
          ${raceHtml}`)
     );
+
+    // --- Today plan: the hero. What to do right now to fuel the work. ---
+    const todayCard = el("div", { class: "card wide today-card" });
+    main.appendChild(todayCard);
+    window.TodayPlan.mount(todayCard, {
+      user, plan, session, profileId: stored.id, date: todayKey(),
+      savePlan: saveTodayPlan,
+    });
 
     // flags: model flags + rolling-EA flag on top
     // Only alarm when it's genuinely warranted: very low EA always, or a
