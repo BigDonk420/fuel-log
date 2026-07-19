@@ -428,7 +428,7 @@
     main.appendChild(todayCard);
     window.TodayPlan.mount(todayCard, {
       user, plan, session, profileId: stored.id, date: todayKey(),
-      savePlan: saveTodayPlan,
+      savePlan: saveTodayPlan, refresh: renderDashboard,
     });
 
     // flags: model flags + rolling-EA flag on top

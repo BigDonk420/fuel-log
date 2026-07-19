@@ -1,0 +1,3 @@
+# Only dependency: the official Anthropic SDK, for the AI meal suggester.
+# Everything else in the app is Python standard library.
+anthropic>=0.40

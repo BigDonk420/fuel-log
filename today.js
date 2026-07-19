@@ -183,9 +183,79 @@ window.TodayPlan = (function () {
         <div class="rem"><span>protein</span><b>${remaining.protein}</b><small>g</small></div>
         <div class="rem"><span>fat</span><b>${remaining.fat}</b><small>g</small></div>
       </div>
+      <div class="sg-bar"><button class="btn-suggest" id="tSuggest">✨ Suggest my next meal</button></div>
+      <div id="tSuggestPanel"></div>
       <div id="tPlanForm"></div>`;
 
     root.querySelector("#tPlan").addEventListener("click", planForm);
+    root.querySelector("#tSuggest").addEventListener("click", () => suggestMeal(remaining));
+  }
+
+  /* ---------- AI meal suggester (app computes, Claude composes) ---------- */
+  async function suggestMeal(remaining) {
+    const panel = root.querySelector("#tSuggestPanel");
+    panel.innerHTML = `<div class="sg-loading">Composing a meal to fill the gap…</div>`;
+    const h = new Date().getHours();
+    const mealType = h < 10.5 ? "breakfast" : h < 15 ? "lunch" : h < 18 ? "snack" : "dinner";
+    const s = CTX.session;
+    const body = {
+      profileId: CTX.profileId, date: CTX.date, remaining, mealType,
+      weightKg: CTX.user.weightKg,
+      session: s ? { type: s.type, durationMin: s.durationMin } : null,
+      prefs: CTX.user.notes || "",
+    };
+    try {
+      const r = await fetch("/api/suggest", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error || "error " + r.status);
+      renderSuggestion(panel, res);
+    } catch (e) {
+      panel.innerHTML = `<div class="sg-err">${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderSuggestion(panel, res) {
+    const t = res.totals || {}, tg = res.target || {};
+    const items = (res.items || []).map((i) => `<div class="sg-item">
+      <span class="sg-nm">${esc(i.name)}<small>${i.grams} g${i.source === "estimate" ? " · est." : ""}</small></span>
+      <span class="sg-mac">${i.kcal} kcal · ${i.protein}p ${i.carbs}c ${i.fat}f</span>
+    </div>`).join("");
+    panel.innerHTML = `<div class="sg-card">
+      <div class="sg-head">✨ ${esc(res.meal || "Suggested meal")}</div>
+      ${res.rationale ? `<div class="sg-why">${esc(res.rationale)}</div>` : ""}
+      <div class="sg-items">${items}</div>
+      <div class="sg-tot">
+        <div><b>${Math.round(t.kcal || 0)}</b> kcal · ${Math.round(t.carbs || 0)}c · ${Math.round(t.protein || 0)}p · ${Math.round(t.fat || 0)}f</div>
+        <div class="sg-target">fills your ${Math.round(tg.kcal || 0)} kcal · ${Math.round(tg.carbs || 0)}c · ${Math.round(tg.protein || 0)}p gap</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-ghost" id="sgAgain">Try again</button>
+        <button class="btn-ghost" id="sgClose">Dismiss</button>
+        <button class="btn-primary" id="sgLog">Log this meal</button>
+      </div>
+    </div>`;
+    panel.querySelector("#sgClose").addEventListener("click", () => { panel.innerHTML = ""; });
+    panel.querySelector("#sgAgain").addEventListener("click", () => suggestMeal(res.target));
+    panel.querySelector("#sgLog").addEventListener("click", () => logSuggestion(res));
+  }
+
+  async function logSuggestion(res) {
+    const now = new Date().toISOString();
+    for (const i of res.items || []) {
+      const id = "f" + Math.random().toString(36).slice(2, 9);
+      await fetch("/api/food/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id, profileId: CTX.profileId, date: CTX.date, time: now,
+          name: i.name, barcode: "", per100: i.per100,
+          unitGrams: i.grams, unitLabel: "serving", discrete: true, qty: 1,
+          kcal: i.kcal, protein: i.protein, carbs: i.carbs, fat: i.fat,
+        }),
+      });
+    }
+    if (CTX.refresh) CTX.refresh();       // rebuild the whole dashboard with the new food
   }
 
   function planForm() {

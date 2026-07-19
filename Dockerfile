@@ -1,7 +1,9 @@
-# FuelLog — tiny, dependency-free image (Python stdlib only).
+# FuelLog — Python stdlib + the Anthropic SDK (for the AI meal suggester).
 FROM python:3.12-slim
 
 WORKDIR /app
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app
 
 # SQLite lives on a mounted volume so data survives rebuilds.

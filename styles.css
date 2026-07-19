@@ -191,6 +191,20 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .rem span { display: block; font-size: 11px; color: var(--muted); }
 .rem b { display: block; font-size: 17px; font-weight: 700; margin: 1px 0; }
 .rem small { font-size: 10px; color: var(--muted); }
+/* AI meal suggester */
+.sg-bar { padding: 0 20px 16px; }
+.btn-suggest { width: 100%; background: var(--accent-2); color: #04263c; border: none; padding: 12px; font-weight: 600; font-size: 15px; }
+.btn-suggest:hover { filter: brightness(1.06); }
+.sg-loading, .sg-err { padding: 0 20px 16px; font-size: 13px; color: var(--muted); }
+.sg-err { color: var(--danger); }
+.sg-card { margin: 0 20px 18px; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
+.sg-head { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.sg-why { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.sg-item { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.sg-nm small { color: var(--muted); margin-left: 6px; }
+.sg-mac { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.sg-tot { margin: 10px 0 4px; font-size: 14px; }
+.sg-target { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .plan-form { padding: 12px 20px 18px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .pf-row { display: grid; grid-template-columns: 1.4fr 1fr .8fr; gap: 10px; }
 .pf-row label { display: block; font-size: 12px; color: var(--muted); }

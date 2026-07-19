@@ -53,6 +53,15 @@ PIN = os.environ.get("APP_PIN", "666")
 # https://fdc.nal.usda.gov/api-key-signup.html and set USDA_API_KEY.
 USDA_API_KEY = os.environ.get("USDA_API_KEY", "DEMO_KEY")
 UA = "Mozilla/5.0 (compatible; FuelLog/1.0)"
+# AI meal suggester. Default to the most capable model; override with
+# SUGGEST_MODEL (e.g. claude-haiku-4-5) to trade quality for cost. The key lives
+# in .env as ANTHROPIC_API_KEY. The SDK is optional at import so the rest of the
+# app runs without it — the /api/suggest route degrades gracefully.
+SUGGEST_MODEL = os.environ.get("SUGGEST_MODEL", "claude-opus-4-8")
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(HERE, "data", "fuellog.db"))
 os.chdir(HERE)
@@ -349,6 +358,136 @@ def search_sources(q):
     return [f for f in out if f["name"] and f["per100"]["kcal"]]
 
 
+def best_match(q):
+    """Top real-database hit for a food name — the validation anchor."""
+    for f in search_sources(q or ""):
+        return f
+    return None
+
+
+# ---------- AI meal suggester ----------
+# The app computes the remaining macro envelope; Claude proposes foods + grams;
+# the app then validates each food against the real database and computes the
+# actual totals. The model NEVER supplies the final nutrition numbers.
+SUGGEST_SYSTEM = (
+    "You are a sports-nutrition assistant for distance runners. Given the macros "
+    "an athlete still needs for the rest of today, compose ONE realistic meal that "
+    "fills that envelope as closely as possible.\n"
+    "Priorities, in order: (1) hit the carbohydrate target — carbs fuel a runner's "
+    "training and recovery; (2) hit the protein target; (3) let fat fill the remainder. "
+    "Use 2-5 common, real, whole or lightly-processed foods that are easy to find in a "
+    "food database (chicken breast, white rice, banana, Greek yogurt, oats, eggs, olive "
+    "oil, etc.). Approximate portions in grams are fine.\n"
+    "You do NOT compute final nutrition — the app validates your foods against a real "
+    "database. For each item give a short database-friendly search query and a rough "
+    "per-100g estimate (used only if the database has no match)."
+)
+
+SUGGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "meal": {"type": "string"},
+        "rationale": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "query": {"type": "string"},
+                    "grams": {"type": "number"},
+                    "per100": {
+                        "type": "object",
+                        "properties": {
+                            "kcal": {"type": "number"}, "protein": {"type": "number"},
+                            "carbs": {"type": "number"}, "fat": {"type": "number"},
+                        },
+                        "required": ["kcal", "protein", "carbs", "fat"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["name", "query", "grams", "per100"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["meal", "rationale", "items"],
+    "additionalProperties": False,
+}
+
+
+def compose_meal(ctx):
+    """Ask Claude for a meal plan (foods + grams). Returns the parsed dict."""
+    r = ctx.get("remaining") or {}
+    session = ctx.get("session") or {}
+    sess_txt = (
+        f"today's session is a {session.get('type')} of about "
+        f"{session.get('durationMin')} min"
+        if session and session.get("type") and session.get("type") != "rest"
+        else "today is a rest / easy day"
+    )
+    prefs = (ctx.get("prefs") or "").strip()
+    user = (
+        f"Meal to compose: {ctx.get('mealType', 'a meal')}.\n"
+        f"Macros still needed for the rest of today: "
+        f"{round(r.get('kcal', 0))} kcal, {round(r.get('carbs', 0))} g carbs, "
+        f"{round(r.get('protein', 0))} g protein, {round(r.get('fat', 0))} g fat.\n"
+        f"Athlete: ~{round(ctx.get('weightKg', 70))} kg runner; {sess_txt}."
+    )
+    if prefs:
+        user += f"\nDietary notes / preferences: {prefs}"
+
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+    resp = client.messages.create(
+        model=SUGGEST_MODEL,
+        max_tokens=1500,
+        system=SUGGEST_SYSTEM,
+        messages=[{"role": "user", "content": user}],
+        output_config={"format": {"type": "json_schema", "schema": SUGGEST_SCHEMA}},
+    )
+    text = next((b.text for b in resp.content if b.type == "text"), "{}")
+    return json.loads(text)
+
+
+def validate_meal(raw, remaining):
+    """Replace Claude's estimates with real database macros where available,
+    then compute the actual totals. This is the 'validate' half of the contract."""
+    items, totals = [], {"kcal": 0, "protein": 0, "carbs": 0, "fat": 0}
+    for it in raw.get("items", []):
+        grams = float(it.get("grams") or 0)
+        if grams <= 0:
+            continue
+        match = best_match(it.get("query") or it.get("name"))
+        per100 = match["per100"] if match else (it.get("per100") or {})
+        source = match["source"] if match else "estimate"
+        s = grams / 100.0
+        e = {
+            "name": it.get("name", "food"),
+            "grams": round(grams),
+            "per100": {
+                "kcal": round(per100.get("kcal", 0)),
+                "protein": round(per100.get("protein", 0)),
+                "carbs": round(per100.get("carbs", 0)),
+                "fat": round(per100.get("fat", 0)),
+            },
+            "kcal": round(per100.get("kcal", 0) * s),
+            "protein": round(per100.get("protein", 0) * s),
+            "carbs": round(per100.get("carbs", 0) * s),
+            "fat": round(per100.get("fat", 0) * s),
+            "source": source,
+        }
+        for k in totals:
+            totals[k] += e[k]
+        items.append(e)
+    return {
+        "meal": raw.get("meal", "Suggested meal"),
+        "rationale": raw.get("rationale", ""),
+        "target": remaining,
+        "items": items,
+        "totals": {k: round(v) for k, v in totals.items()},
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     # ----- response helpers -----
     def _json(self, obj, code=200, extra_headers=None):
@@ -486,6 +625,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._guard() and self._save_food_def(path.rsplit("/", 1)[-1])
         if path.startswith("/api/food/"):
             return self._guard() and self._save_food(path.rsplit("/", 1)[-1])
+        if path == "/api/suggest":
+            return self._guard() and self._suggest()
         return self._json({"error": "not found"}, 404)
 
     def do_PUT(self):
@@ -665,6 +806,21 @@ class Handler(SimpleHTTPRequestHandler):
         if not q:
             return self._json([])
         self._json(search_sources(q))
+
+    def _suggest(self):
+        try:
+            body = self._body()
+        except Exception:
+            return self._json({"error": "bad JSON"}, 400)
+        if anthropic is None:
+            return self._json({"error": "AI suggestions unavailable: the 'anthropic' package isn't installed on the server."}, 501)
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return self._json({"error": "AI suggestions need an Anthropic API key. Add ANTHROPIC_API_KEY to the server's .env file."}, 400)
+        try:
+            raw = compose_meal(body)
+        except Exception as e:  # noqa: BLE001
+            return self._json({"error": "suggestion failed: " + str(e)[:200]}, 502)
+        self._json(validate_meal(raw, body.get("remaining") or {}))
 
     # ----- intervals.icu proxy -----
     def _proxy(self, parsed):
