@@ -371,8 +371,9 @@ def best_match(q):
 # actual totals. The model NEVER supplies the final nutrition numbers.
 SUGGEST_SYSTEM = (
     "You are a sports-nutrition assistant for distance runners. Given the macros "
-    "an athlete still needs for the rest of today, compose ONE realistic meal that "
-    "fills that envelope as closely as possible.\n"
+    "an athlete wants from a SINGLE meal, compose ONE realistic meal that "
+    "fills that envelope as closely as possible. This is one meal of several in the "
+    "day — do NOT try to cram the athlete's whole daily remainder into it.\n"
     "Priorities, in order: (1) hit the carbohydrate target — carbs fuel a runner's "
     "training and recovery; (2) hit the protein target; (3) let fat fill the remainder. "
     "Use 2-5 common, real, whole or lightly-processed foods that are easy to find in a "
@@ -416,9 +417,39 @@ SUGGEST_SCHEMA = {
 }
 
 
+# Time-of-day steer so a 7am suggestion looks like breakfast, not dinner.
+MEAL_STYLE = {
+    "breakfast": "It is BREAKFAST — favour breakfast foods: oats, eggs, Greek yogurt, "
+                 "fruit, wholegrain toast, granola, milk, nut butter.",
+    "lunch": "It is LUNCH — favour a balanced plate: a lean protein, a starch "
+             "(rice, potato, wrap, bread), and vegetables or fruit.",
+    "snack": "It is a SNACK — keep it light and simple: fruit, yogurt, a bar, nuts, "
+             "toast, a smoothie. Usually 1-2 items.",
+    "dinner": "It is DINNER — favour a cooked plate: a protein, a cooked starch "
+              "(rice, pasta, potato), and vegetables.",
+}
+
+
+def meal_target(remaining, cap):
+    """Scale the day's remaining macros down to a single meal's envelope.
+    Keeps the carb/protein/fat RATIO of the remaining day, but shrinks the whole
+    thing so total calories land near `cap`. No cap (or cap >= remaining) means
+    the meal simply targets whatever is left."""
+    kcal = float((remaining or {}).get("kcal") or 0)
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        cap = 0
+    if kcal <= 0 or cap <= 0 or cap >= kcal:
+        return dict(remaining or {})
+    f = cap / kcal
+    return {k: round((remaining.get(k) or 0) * f) for k in ("kcal", "carbs", "protein", "fat")}
+
+
 def compose_meal(ctx):
     """Ask Claude for a meal plan (foods + grams). Returns the parsed dict."""
-    r = ctx.get("remaining") or {}
+    tgt = ctx.get("mealTarget") or ctx.get("remaining") or {}
+    day = ctx.get("remaining") or {}
     session = ctx.get("session") or {}
     sess_txt = (
         f"today's session is a {session.get('type')} of about "
@@ -426,14 +457,24 @@ def compose_meal(ctx):
         if session and session.get("type") and session.get("type") != "rest"
         else "today is a rest / easy day"
     )
+    meal_type = ctx.get("mealType", "a meal")
     prefs = (ctx.get("prefs") or "").strip()
     user = (
-        f"Meal to compose: {ctx.get('mealType', 'a meal')}.\n"
-        f"Macros still needed for the rest of today: "
-        f"{round(r.get('kcal', 0))} kcal, {round(r.get('carbs', 0))} g carbs, "
-        f"{round(r.get('protein', 0))} g protein, {round(r.get('fat', 0))} g fat.\n"
-        f"Athlete: ~{round(ctx.get('weightKg', 70))} kg runner; {sess_txt}."
+        f"Meal to compose: {meal_type}.\n"
+        f"Target macros for THIS meal: "
+        f"{round(tgt.get('kcal', 0))} kcal, {round(tgt.get('carbs', 0))} g carbs, "
+        f"{round(tgt.get('protein', 0))} g protein, {round(tgt.get('fat', 0))} g fat.\n"
     )
+    if round(day.get("kcal", 0)) > round(tgt.get("kcal", 0)):
+        user += (
+            f"(Context: the athlete still needs about {round(day.get('kcal', 0))} kcal "
+            f"across the whole rest of the day — this meal is just one slice of that, so "
+            f"stick to the per-meal target above.)\n"
+        )
+    user += f"Athlete: ~{round(ctx.get('weightKg', 70))} kg runner; {sess_txt}."
+    style = MEAL_STYLE.get(meal_type)
+    if style:
+        user += f"\n{style}"
     if prefs:
         user += f"\nDietary notes / preferences: {prefs}"
     exclude = [e for e in (ctx.get("exclude") or []) if str(e).strip()]
@@ -827,11 +868,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"error": "AI suggestions unavailable: the 'anthropic' package isn't installed on the server."}, 501)
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return self._json({"error": "AI suggestions need an Anthropic API key. Add ANTHROPIC_API_KEY to the server's .env file."}, 400)
+        tgt = meal_target(body.get("remaining") or {}, body.get("capKcal"))
+        body["mealTarget"] = tgt
         try:
             raw = compose_meal(body)
         except Exception as e:  # noqa: BLE001
             return self._json({"error": "suggestion failed: " + str(e)[:200]}, 502)
-        self._json(validate_meal(raw, body.get("remaining") or {}, body.get("exclude")))
+        self._json(validate_meal(raw, tgt, body.get("exclude")))
 
     # ----- intervals.icu proxy -----
     def _proxy(self, parsed):

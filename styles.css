@@ -193,6 +193,10 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .rem small { font-size: 10px; color: var(--muted); }
 /* AI meal suggester */
 .sg-bar { padding: 0 20px 16px; }
+.sg-cap { display: block; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+.sg-cap span { display: block; margin-bottom: 4px; }
+.sg-cap b { color: var(--text); font-variant-numeric: tabular-nums; }
+.sg-cap input[type="range"] { width: 100%; accent-color: var(--accent-2); }
 .btn-suggest { width: 100%; background: var(--accent-2); color: #04263c; border: none; padding: 12px; font-weight: 600; font-size: 15px; }
 .btn-suggest:hover { filter: brightness(1.06); }
 .sg-loading, .sg-err { padding: 0 20px 16px; font-size: 13px; color: var(--muted); }

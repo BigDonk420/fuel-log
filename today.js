@@ -21,6 +21,7 @@ window.TodayPlan = (function () {
 
   let CTX = null; // { user, plan, session, profileId, date, savePlan }
   let root = null;
+  let DAYREM = null; // the day's remaining macros (the suggester scales a meal out of this)
 
   const api = {
     async logs() {
@@ -155,6 +156,8 @@ window.TodayPlan = (function () {
     const s = CTX.session;
     const rd = readiness(s, consumed, tg);
     const timeline = buildTimeline(meals, s, remaining);
+    // default the next-meal cap to an even share of what's left across the meals to come
+    const defaultCap = Math.min(remaining.kcal, Math.max(200, Math.round(remaining.kcal / mealsLeft() / 50) * 50));
 
     const sessionLine = s && s.type !== "rest"
       ? `${TYPE_LABEL[s.type]}${s.durationMin ? " · " + s.durationMin + " min" : ""}${s.startTime ? " · " + clock(at(s.startTime)) : ""}`
@@ -183,23 +186,42 @@ window.TodayPlan = (function () {
         <div class="rem"><span>protein</span><b>${remaining.protein}</b><small>g</small></div>
         <div class="rem"><span>fat</span><b>${remaining.fat}</b><small>g</small></div>
       </div>
-      <div class="sg-bar"><button class="btn-suggest" id="tSuggest">✨ Suggest my next meal</button></div>
+      <div class="sg-bar">
+        ${remaining.kcal > 150 ? `<label class="sg-cap">
+          <span>next meal max <b id="sgCapV">${defaultCap}</b> kcal</span>
+          <input type="range" id="sgCap" min="150" max="${remaining.kcal}" step="50" value="${defaultCap}"/>
+        </label>` : ""}
+        <button class="btn-suggest" id="tSuggest">✨ Suggest my next meal</button>
+      </div>
       <div id="tSuggestPanel"></div>
       <div id="tPlanForm"></div>`;
 
+    DAYREM = remaining;
     root.querySelector("#tPlan").addEventListener("click", planForm);
-    root.querySelector("#tSuggest").addEventListener("click", () => suggestMeal(remaining));
+    root.querySelector("#tSuggest").addEventListener("click", () => suggestMeal());
+    const cap = root.querySelector("#sgCap");
+    if (cap) cap.addEventListener("input", () => { root.querySelector("#sgCapV").textContent = cap.value; });
+  }
+
+  // How many eating occasions are realistically left today, so the default
+  // "next meal max" is the day's remaining kcal split across them — not the lot.
+  function mealsLeft() {
+    const h = new Date().getHours() + new Date().getMinutes() / 60;
+    const anchors = [8, 12.5, 18.5]; // breakfast, lunch, dinner
+    return Math.max(1, anchors.filter((a) => a >= h - 1).length);
   }
 
   /* ---------- AI meal suggester (app computes, Claude composes) ---------- */
-  async function suggestMeal(remaining) {
+  async function suggestMeal() {
     const panel = root.querySelector("#tSuggestPanel");
     panel.innerHTML = `<div class="sg-loading">Composing a meal to fill the gap…</div>`;
     const h = new Date().getHours();
     const mealType = h < 10.5 ? "breakfast" : h < 15 ? "lunch" : h < 18 ? "snack" : "dinner";
+    const capEl = root.querySelector("#sgCap");
+    const capKcal = capEl ? parseInt(capEl.value, 10) : (DAYREM ? DAYREM.kcal : 0);
     const s = CTX.session;
     const body = {
-      profileId: CTX.profileId, date: CTX.date, remaining, mealType,
+      profileId: CTX.profileId, date: CTX.date, remaining: DAYREM, capKcal, mealType,
       weightKg: CTX.user.weightKg,
       session: s ? { type: s.type, durationMin: s.durationMin } : null,
       prefs: CTX.user.notes || "",
@@ -239,11 +261,11 @@ window.TodayPlan = (function () {
       </div>
     </div>`;
     panel.querySelector("#sgClose").addEventListener("click", () => { panel.innerHTML = ""; });
-    panel.querySelector("#sgAgain").addEventListener("click", () => suggestMeal(res.target));
+    panel.querySelector("#sgAgain").addEventListener("click", () => suggestMeal());
     panel.querySelector("#sgLog").addEventListener("click", () => logSuggestion(res));
     panel.querySelectorAll(".sg-ban").forEach((b) => b.addEventListener("click", async () => {
       if (CTX.excludeFood) CTX.user.exclude = await CTX.excludeFood(b.dataset.food);
-      suggestMeal(res.target);        // re-suggest without the banned food
+      suggestMeal();        // re-suggest (same cap) without the banned food
     }));
   }
 
