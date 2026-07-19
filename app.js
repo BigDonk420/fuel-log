@@ -161,7 +161,58 @@
     });
   }
 
+  // Aggregate raw intervals activities into a date -> {sec,load,cal} map.
+  function aggregateActs(acts) {
+    const byDate = {};
+    (acts || []).forEach((a) => {
+      const key = (a.start_date_local || a.start_date || "").slice(0, 10);
+      if (!key) return;
+      const b = (byDate[key] = byDate[key] || { sec: 0, load: 0, cal: 0 });
+      b.sec += a.moving_time || a.elapsed_time || 0;
+      b.load += a.icu_training_load || a.training_load || 0;
+      b.cal += a.calories || 0;
+    });
+    return byDate;
+  }
+
   const Provider = {
+    // Training data for an arbitrary list of dates (the History tab). Live
+    // intervals data when connected, otherwise the sample microcycle; manually
+    // planned sessions (profile.plans) always win for their day.
+    async getRange(user, dates) {
+      const from = dates[0], to = dates[dates.length - 1];
+      let byDate = {};
+      const live = !!(user.intervalsApiKey && user.intervalsAthleteId);
+      if (live) {
+        try {
+          const res = await fetch(
+            `/intervals/activities?athlete=${encodeURIComponent(user.intervalsAthleteId)}&oldest=${from}&newest=${to}`,
+            { headers: { "X-Intervals-Key": user.intervalsApiKey } }
+          );
+          if (res.ok) byDate = aggregateActs(await res.json());
+        } catch (e) { /* fall back to sample below */ }
+      }
+      const out = {};
+      dates.forEach((d) => {
+        const b = byDate[d];
+        if (b && b.sec > 0) {
+          const durationMin = Math.round(b.sec / 60), tss = Math.round(b.load);
+          out[d] = { type: classify(durationMin, tss), durationMin, tss, eeeKcal: Math.round(b.cal), source: "intervals" };
+        } else if (live) {
+          out[d] = { type: "rest", durationMin: 0, tss: 0, eeeKcal: 0, source: "intervals" };
+        } else {
+          const s = MICROCYCLE[new Date(d + "T00:00:00").getDay()];
+          out[d] = { type: s.type, durationMin: s.durationMin, tss: tssFor(s), eeeKcal: eeeFor(s, user.weightKg), source: "sample" };
+        }
+      });
+      Object.keys(user.plans || {}).forEach((d) => {
+        const p = user.plans[d];
+        if (out[d] !== undefined && p && p.type) {
+          out[d] = { type: p.type, durationMin: p.durationMin || 0, tss: tssFor(p), eeeKcal: eeeFor(p, user.weightKg), source: "planned" };
+        }
+      });
+      return out;
+    },
     async getWeek(user) {
       const dates = windowDates();
       const oldest = dates[0].toISOString().slice(0, 10);
@@ -375,6 +426,18 @@
     return u.exclude;
   }
 
+  // Log a bodyweight (kg) for a date. Carry-forward is a read-time concern
+  // (History fills gaps from the last entry), so here we just record the point
+  // and keep the profile's canonical weightKg pinned to the newest measurement.
+  async function saveWeight(date, kg) {
+    const u = Store.current();
+    u.weights = u.weights || {};
+    u.weights[date] = Math.round(kg * 10) / 10;
+    const latest = Object.keys(u.weights).sort().pop();
+    if (latest) u.weightKg = u.weights[latest];
+    try { await Store.upsert(u); } catch (e) { console.error("weight save failed", e); }
+  }
+
   async function saveTodayPlan(session) {
     const u = Store.current();
     u.plans = u.plans || {};
@@ -382,6 +445,37 @@
     else delete u.plans[todayKey()];
     try { await Store.upsert(u); } catch (e) { console.error("plan save failed", e); }
     renderDashboard();
+  }
+
+  /* ---------- Today / History tab bar ---------- */
+  function tabBar(active) {
+    const nav = el("nav", { class: "tabbar" });
+    nav.innerHTML = `
+      <button class="tab ${active === "today" ? "on" : ""}" data-v="today">Today</button>
+      <button class="tab ${active === "history" ? "on" : ""}" data-v="history">History</button>`;
+    nav.querySelectorAll(".tab").forEach((b) =>
+      b.addEventListener("click", () => (b.dataset.v === "history" ? renderHistory() : renderDashboard())));
+    return nav;
+  }
+
+  async function renderHistory() {
+    const stored = Store.current();
+    if (!stored) return route();
+    const user = decorate(stored);
+    const app = $("#app");
+    app.innerHTML = "";
+    app.appendChild(topBar(stored));
+    app.appendChild(tabBar("history"));
+    const main = el("main", { class: "dash" });
+    app.appendChild(main);
+    const card = el("div", { class: "card wide" });
+    main.appendChild(card);
+    window.History.mount(card, {
+      stored, user, profileId: stored.id,
+      getRange: (dates) => Provider.getRange(user, dates),
+      saveWeight, refresh: renderHistory,
+      kgToLb: U.kgToLbs, lbToKg: U.lbsToKg, model: NutriModel,
+    });
   }
 
   async function renderDashboard() {
@@ -421,6 +515,7 @@
     const app = $("#app");
     app.innerHTML = "";
     app.appendChild(topBar(stored));
+    app.appendChild(tabBar("today"));
     const main = el("main", { class: "dash" });
     app.appendChild(main);
 

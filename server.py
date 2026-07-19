@@ -655,6 +655,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._guard() and self._list_profiles()
         if path == "/api/food":
             return self._guard() and self._list_food(urlparse(self.path))
+        if path == "/api/history":
+            return self._guard() and self._history(urlparse(self.path))
         if path == "/api/foods":
             return self._guard() and self._list_food_defs()
         if path == "/api/frequent":
@@ -743,6 +745,46 @@ class Handler(SimpleHTTPRequestHandler):
         ).fetchall()
         db.close()
         self._json([json.loads(r[0]) for r in rows])
+
+    def _history(self, parsed):
+        """Per-day food totals + items across a date range, in one query, so the
+        History tab doesn't fan out into one request per day. Totals are summed
+        server-side; items are returned trimmed for the day's expandable log."""
+        qs = parse_qs(parsed.query)
+        profile = qs.get("profile", [""])[0]
+        frm = qs.get("from", [""])[0]
+        to = qs.get("to", [""])[0]
+        db = db_conn()
+        rows = db.execute(
+            "SELECT data FROM food_logs WHERE profile_id = ? AND log_date >= ? "
+            "AND log_date <= ? ORDER BY log_date",
+            (profile, frm, to),
+        ).fetchall()
+        db.close()
+        days = {}
+        for (data,) in rows:
+            e = json.loads(data)
+            d = e.get("date", "")
+            if not d:
+                continue
+            day = days.get(d)
+            if day is None:
+                day = days[d] = {"date": d, "kcal": 0, "carbs": 0,
+                                 "protein": 0, "fat": 0, "items": []}
+            for k in ("kcal", "carbs", "protein", "fat"):
+                day[k] += e.get(k) or 0
+            day["items"].append({
+                "name": e.get("name", "food"),
+                "kcal": round(e.get("kcal") or 0),
+                "carbs": round(e.get("carbs") or 0),
+                "protein": round(e.get("protein") or 0),
+                "fat": round(e.get("fat") or 0),
+                "time": e.get("time", ""),
+            })
+        for day in days.values():
+            for k in ("kcal", "carbs", "protein", "fat"):
+                day[k] = round(day[k])
+        self._json(sorted(days.values(), key=lambda x: x["date"]))
 
     def _save_food(self, fid):
         try:
