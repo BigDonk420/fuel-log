@@ -274,6 +274,8 @@
               </div>
               <label>Notes / anything else the model should know
                 <textarea name="notes" rows="2">${u.notes || ""}</textarea></label>
+              <label>Foods to never suggest <span class="hint">comma-separated — the meal AI will avoid these (e.g. mushrooms, cilantro)</span>
+                <input name="exclude" value="${(u.exclude || []).join(", ")}"/></label>
             </fieldset>
 
             <div class="form-actions">
@@ -316,6 +318,7 @@
         intervalsApiKey: f.intervalsApiKey.value.trim(),
         intervalsAthleteId: f.intervalsAthleteId.value.trim(),
         notes: f.notes.value.trim(),
+        exclude: f.exclude.value.split(",").map((s) => s.trim()).filter(Boolean),
         water: u.water || {},
         createdAt: u.createdAt || Date.now(),
       };
@@ -361,6 +364,15 @@
   }
   function typeLabel(t) {
     return { rest: "Rest day", recovery: "Recovery", easy: "Easy run", tempo: "Tempo", quality: "Quality", long: "Long run", race: "Race" }[t] || t;
+  }
+
+  async function excludeFood(name) {
+    const u = Store.current();
+    u.exclude = u.exclude || [];
+    const n = String(name || "").trim();
+    if (n && !u.exclude.some((x) => x.toLowerCase() === n.toLowerCase())) u.exclude.push(n);
+    try { await Store.upsert(u); } catch (e) { console.error("exclude save failed", e); }
+    return u.exclude;
   }
 
   async function saveTodayPlan(session) {
@@ -428,7 +440,7 @@
     main.appendChild(todayCard);
     window.TodayPlan.mount(todayCard, {
       user, plan, session, profileId: stored.id, date: todayKey(),
-      savePlan: saveTodayPlan, refresh: renderDashboard,
+      savePlan: saveTodayPlan, refresh: renderDashboard, excludeFood,
     });
 
     // flags: model flags + rolling-EA flag on top

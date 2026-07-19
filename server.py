@@ -436,6 +436,12 @@ def compose_meal(ctx):
     )
     if prefs:
         user += f"\nDietary notes / preferences: {prefs}"
+    exclude = [e for e in (ctx.get("exclude") or []) if str(e).strip()]
+    if exclude:
+        user += (
+            "\nHARD RULE — the athlete will NOT eat these foods; never include them "
+            "or anything containing them: " + ", ".join(exclude) + "."
+        )
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
     resp = client.messages.create(
@@ -449,13 +455,18 @@ def compose_meal(ctx):
     return json.loads(text)
 
 
-def validate_meal(raw, remaining):
+def validate_meal(raw, remaining, exclude=None):
     """Replace Claude's estimates with real database macros where available,
-    then compute the actual totals. This is the 'validate' half of the contract."""
+    then compute the actual totals. This is the 'validate' half of the contract.
+    Excluded foods are dropped as a backstop even if the model slips one in."""
+    excl = [str(e).strip().lower() for e in (exclude or []) if str(e).strip()]
     items, totals = [], {"kcal": 0, "protein": 0, "carbs": 0, "fat": 0}
     for it in raw.get("items", []):
         grams = float(it.get("grams") or 0)
         if grams <= 0:
+            continue
+        blob = (str(it.get("name", "")) + " " + str(it.get("query", ""))).lower()
+        if any(e in blob for e in excl):
             continue
         match = best_match(it.get("query") or it.get("name"))
         per100 = match["per100"] if match else (it.get("per100") or {})
@@ -820,7 +831,7 @@ class Handler(SimpleHTTPRequestHandler):
             raw = compose_meal(body)
         except Exception as e:  # noqa: BLE001
             return self._json({"error": "suggestion failed: " + str(e)[:200]}, 502)
-        self._json(validate_meal(raw, body.get("remaining") or {}))
+        self._json(validate_meal(raw, body.get("remaining") or {}, body.get("exclude")))
 
     # ----- intervals.icu proxy -----
     def _proxy(self, parsed):

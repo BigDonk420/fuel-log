@@ -200,9 +200,11 @@ legend { padding: 0 8px; color: var(--muted); font-size: 13px; }
 .sg-card { margin: 0 20px 18px; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
 .sg-head { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
 .sg-why { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
-.sg-item { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
-.sg-nm small { color: var(--muted); margin-left: 6px; }
+.sg-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.sg-nm { flex: 1; min-width: 0; } .sg-nm small { color: var(--muted); margin-left: 6px; }
 .sg-mac { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.sg-ban { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: .5; flex: none; }
+.sg-ban:hover { opacity: 1; }
 .sg-tot { margin: 10px 0 4px; font-size: 14px; }
 .sg-target { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .plan-form { padding: 12px 20px 18px; border-top: 1px solid var(--line); background: var(--surface-2); }

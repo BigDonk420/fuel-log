@@ -203,6 +203,7 @@ window.TodayPlan = (function () {
       weightKg: CTX.user.weightKg,
       session: s ? { type: s.type, durationMin: s.durationMin } : null,
       prefs: CTX.user.notes || "",
+      exclude: CTX.user.exclude || [],
     };
     try {
       const r = await fetch("/api/suggest", {
@@ -221,6 +222,7 @@ window.TodayPlan = (function () {
     const items = (res.items || []).map((i) => `<div class="sg-item">
       <span class="sg-nm">${esc(i.name)}<small>${i.grams} g${i.source === "estimate" ? " · est." : ""}</small></span>
       <span class="sg-mac">${i.kcal} kcal · ${i.protein}p ${i.carbs}c ${i.fat}f</span>
+      <button class="sg-ban" data-food="${esc(i.name)}" title="Never suggest this" aria-label="never suggest ${esc(i.name)}">🚫</button>
     </div>`).join("");
     panel.innerHTML = `<div class="sg-card">
       <div class="sg-head">✨ ${esc(res.meal || "Suggested meal")}</div>
@@ -239,6 +241,10 @@ window.TodayPlan = (function () {
     panel.querySelector("#sgClose").addEventListener("click", () => { panel.innerHTML = ""; });
     panel.querySelector("#sgAgain").addEventListener("click", () => suggestMeal(res.target));
     panel.querySelector("#sgLog").addEventListener("click", () => logSuggestion(res));
+    panel.querySelectorAll(".sg-ban").forEach((b) => b.addEventListener("click", async () => {
+      if (CTX.excludeFood) CTX.user.exclude = await CTX.excludeFood(b.dataset.food);
+      suggestMeal(res.target);        // re-suggest without the banned food
+    }));
   }
 
   async function logSuggestion(res) {
